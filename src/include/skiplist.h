@@ -27,18 +27,40 @@ namespace LSMKV {
 
       struct node {
           K const _key;
-          node *_next[1];
+          std::atomic<node *> _next[1];
 
-          node *next(const byte &level) {
-              return _next[level];
+          node *next(int n) {
+              assert(n >= 0);
+              // Use an 'acquire load' so that we observe a fully initialized
+              // version of the returned Node.
+              return _next[n].load(std::memory_order_acquire);
           }
 
-          void setnext(const byte &l, node *n) {
-              _next[l] = n;
+          void setnext(int n, node *x) {
+              assert(n >= 0);
+              // Use a 'release store' so that anybody who reads through this
+              // pointer observes a fully initialized version of the inserted node.
+              _next[n].store(x, std::memory_order_release);
+          }
+
+          // No-barrier variants that can be safely used in a few locations.
+          node *NoBarrier_Next(int n) {
+              assert(n >= 0);
+              return _next[n].load(std::memory_order_relaxed);
+          }
+
+          void NoBarrier_SetNext(int n, node *x) {
+              assert(n >= 0);
+              _next[n].store(x, std::memory_order_relaxed);
           }
 
           node(K &&key) : _key(std::move(key)) {
           }
+
+          node(const K &key) : _key(key) {
+          }
+
+          ~node() = default;
       };
 
 
@@ -46,12 +68,6 @@ namespace LSMKV {
           return (n != nullptr) && Cmp::compare(n->_key, _key) < 0;
       }
 
-      int key_is_after_node(const K &_key, node *n) const {
-          if (n == nullptr) {
-              return -1;
-          }
-          return Cmp::compare(n->_key, _key) < 0;
-      }
 
       bool key_equal(const K &_key, node *n) const {
           return Cmp::compare(n->_key, _key) == 0;
@@ -83,23 +99,15 @@ namespace LSMKV {
           byte level = getMaxHeight() - 1;
           while (true) {
               node *next = cur->next(level);
-              switch (key_is_after_node(key, next)) {
-                  case 0:
-                      if (key_equal(key, next)) {
-                          return next;
-                      }
-                      [[fallthrough]];
-                  case -1:
-                      prev[level] = cur;
-                      if (level == 0) [[unlikely]] {
-                          return next;
-                      } else {
-                          level--;
-                      }
-                      break;
-                  case 1:
-                      cur = next;
-                      break;
+              if (KeyIsAfterNode(key, next)) {
+                  cur = next;
+              } else {
+                  prev[level] = cur;
+                  if (level == 0) {
+                      return next;
+                  } else {
+                      level--;
+                  }
               }
           }
       }
@@ -135,14 +143,15 @@ namespace LSMKV {
       }
 
 
-      node *createNode(K &&key, const byte &level) {
-          auto node_memory = arena->allocateAligned(sizeof(node) + sizeof(node *) * (level - 1));
-          return new(node_memory) node(std::move(key));
+      template<typename U>
+      node *createNode(U &&key, const byte &level) {
+          auto node_memory = arena->allocateAligned(sizeof(node) + sizeof(std::atomic<node *>) * (level - 1));
+          return new(node_memory) node(std::forward<U>(key));
       }
 
       std::minstd_rand rnd{std::random_device{}()};
       Arena *arena;
-      byte max_level;
+      std::atomic<byte> max_level;
       node *_head;
   public:
       class Iterator {
@@ -185,7 +194,7 @@ namespace LSMKV {
       };
 
       explicit Skiplist(Arena *arena)
-              : arena(arena), _head(createNode({}, MAX_LEVEL)), max_level(1) {
+              : arena(arena), _head(createNode(K{}, MAX_LEVEL)), max_level(1) {
           for (byte level = 0; level < MAX_LEVEL; level++) {
               _head->setnext(level, nullptr);
           }
@@ -193,7 +202,8 @@ namespace LSMKV {
 
       ~Skiplist() = default;
 
-      void insert(K &&key) {
+      template<typename U>
+      void insert(U &&key) {
           node *prev[MAX_LEVEL];
           node *n = find_set_prev(key, prev);
 
@@ -204,12 +214,12 @@ namespace LSMKV {
               for (byte i = getMaxHeight(); i < height; i++) {
                   prev[i] = _head;
               }
-              max_level = (height);
+              max_level = height;
           }
 
-          n = createNode(std::move(key), height);
+          n = createNode(std::forward<U>(key), height);
           for (int i = 0; i < height; i++) {
-              n->setnext(i, prev[i]->next(i));
+              n->NoBarrier_SetNext(i, prev[i]->NoBarrier_Next(i));
               prev[i]->setnext(i, n);
           }
       }

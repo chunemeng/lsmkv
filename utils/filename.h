@@ -6,18 +6,16 @@
 #include <format>
 
 namespace LSMKV {
-
-
   static inline std::string MakeFileName(const std::string &dbname, uint64_t number, const std::string &suffix) {
       return std::format("{}/{:06}.{}", dbname, number, suffix);
   }
 
-  static inline std::string SSTFileName(const std::string &level_name, uint64_t number) {
-      return MakeFileName(level_name, number, "sst");
+  static inline std::string SSTFileName(const std::string &dbname, uint64_t number) {
+      return MakeFileName(dbname, number, "sst");
   }
 
-  static inline std::string VLogFileName(const std::string &dbname) {
-      return dbname + "/" + "vlog";
+  static inline std::string VLogFileName(const std::string &dbname, uint64_t number) {
+      return MakeFileName(dbname, number, "vlog");
   }
 
   static inline std::string VersionFileName(const std::string &dbname) {

@@ -20,6 +20,8 @@ namespace LSMKV {
       size_t alloc_bytes_remaining;
       std::vector<char *> pool;
 
+      mutable std::mutex mutex;
+
       void allocatePtr() {
           alloc_ptr = allocateNewBlock(ARENA_BLOCK_SIZE);
 
@@ -30,7 +32,6 @@ namespace LSMKV {
           waste_ += ARENA_BLOCK_SIZE;
           alloc_bytes_remaining = ARENA_BLOCK_SIZE - padding;
       }
-
 
       char *allocateFallBack(size_t bytes) {
           if (bytes > (ARENA_BLOCK_SIZE >> 2)) [[unlikely]] {
@@ -63,10 +64,12 @@ namespace LSMKV {
 
   public:
       uint64_t getWaste() const {
+          std::unique_lock lock(mutex);
           return allocs_;
       }
 
       u_int64_t getUsed() const {
+          std::unique_lock lock(mutex);
           return allocs_;
       }
 
@@ -84,6 +87,7 @@ namespace LSMKV {
   };
 
   inline char *Arena::allocate(size_t bytes) {
+      std::unique_lock lock(mutex);
       allocs_ += bytes;
       waste_ -= bytes;
 
@@ -104,6 +108,7 @@ namespace LSMKV {
   }
 
   inline char *Arena::allocateAligned(size_t bytes) {
+      std::unique_lock lock(mutex);
       // alloc_ptr % align
       allocs_ += bytes;
       waste_ -= bytes;

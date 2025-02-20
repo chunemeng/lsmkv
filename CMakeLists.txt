@@ -51,10 +51,11 @@ else ()
 endif ()
 
 include(extern/liburing/liburing.cmake)
+include(extern/concurrentqueue/concurrentqueue.cmake)
+include(extern/spdlog/spdlog.cmake)
 
 include_directories("${CMAKE_SOURCE_DIR}")
 include_directories("${CMAKE_SOURCE_DIR}/include")
-
 
 add_subdirectory(src)
 

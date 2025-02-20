@@ -10,6 +10,7 @@
 #include <string_view>
 #include <iostream>
 #include "comparator.h"
+
 namespace LSMKV {
   class WriteSlice {
   public:
@@ -31,7 +32,6 @@ namespace LSMKV {
 
 
   class Slice : public std::string_view {
-      using Comparator = StrComparator;
   public:
       Slice() : std::string_view() {
       }
@@ -39,10 +39,10 @@ namespace LSMKV {
       constexpr Slice(const char *data, size_t size) : std::string_view(data, size) {
       }
 
-      Slice(const std::string &str) : std::string_view(str) {
+      constexpr Slice(const char *data) : std::string_view(data) {
       }
 
-      Slice(const char *data) : std::string_view(data) {
+      Slice(const std::string &str) : std::string_view(str) {
       }
 
       Slice(const Slice &sc) = default;

@@ -40,7 +40,7 @@ namespace LSMKV {
   }
 
   int InternalKeyComparator::compare_impl(const Slice &a, const Slice &b) {
-      int res = StrComparator::compare_impl(extract_user_key(a), extract_user_key(a));
+      int res = StrComparator::compare_impl(extract_user_key(a), extract_user_key(b));
       // if user key is the same, compare sequence number by descending order
       return res ? res : -(NumComparator::compare_impl(extract_seq_num(a), extract_seq_num(b)));
   }

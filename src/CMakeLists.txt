@@ -16,3 +16,6 @@ target_link_libraries(LSMKV PRIVATE
         liburing
 )
 
+target_link_libraries(LSMKV PRIVATE
+        spdlog
+)

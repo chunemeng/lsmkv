@@ -1,0 +1,88 @@
+#include "include/builder.h"
+
+namespace LSMKV {
+  void TableBuilder::Add(const Slice &key, const Slice &value) {
+
+      assert(!closed_);
+
+      if (!OK()) return;
+
+      if (need_next_index_entry_) {
+          index_block_.Add(last_key_, DataBlockEntryInfo());
+          need_next_index_entry_ = false;
+      }
+
+      last_key_ = key;
+
+      if (filter_block_ != nullptr) {
+          filter_block_->AddKey(ExtractUserKey(key));
+      }
+
+      num_entries_++;
+      data_block_.Add(key, value);
+
+      const size_t block_size = data_block_.BlockSize();
+      if (block_size >= Option::block_size) {
+          Flush();
+      }
+  }
+
+  void TableBuilder::Flush() {
+      if (!OK()) return;
+
+      if (filter_block_ != nullptr) {
+          filter_block_->Flush();
+      }
+
+
+      if (data_block_.Empty()) return;
+
+      WriteBlock(&data_block_, &data_block_entry_);
+      if (OK()) {
+          need_next_index_entry_ = true;
+          status_ = file_->Flush();
+      }
+
+  }
+
+  Status TableBuilder::Finish() {
+      closed_ = true;
+      Flush();
+
+      BlockEntryInfo filter_block_handle{}, index_block_handle{};
+
+      // Write filter block
+      if (OK() && filter_block_ != nullptr) {
+          WriteRawBlock(filter_block_->Finish(),
+                        &filter_block_handle);
+      }
+
+      // Write index block
+      if (OK()) {
+          if (need_next_index_entry_) {
+              std::string handle_encoding;
+
+              index_block_.Add(last_key_, DataBlockEntryInfo());
+
+              need_next_index_entry_ = false;
+          }
+          WriteBlock(&index_block_, &index_block_handle);
+      }
+
+      // Write footer
+      if (OK()) {
+          Footer footer{};
+          footer.set_metaindex_handle(filter_block_handle);
+          footer.set_index_handle(index_block_handle);
+          std::string footer_encoding = footer.Encode();
+
+          status_ = file_->Append(footer_encoding);
+          if (status_.ok()) {
+              offset_ += footer_encoding.size();
+          }
+      }
+      return status_;
+  }
+
+
+} // namespace LSMKV

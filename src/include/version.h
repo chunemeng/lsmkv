@@ -97,7 +97,7 @@ namespace LSMKV {
   struct Version {
       explicit Version(const std::string &dbname) : filename(VersionFileName(dbname)) {
           // read from current file
-          auto vlog_files = std::move(VLogFileName(dbname));
+          auto vlog_files = std::move(VLogFileName(dbname, 0));
           if (FileExists(vlog_files)) {
               head = GetFileSize(vlog_files);
               tail = utils::offset_tail(vlog_files, head);
@@ -190,6 +190,10 @@ namespace LSMKV {
           }
       }
 
+      void RemoveFile(const std::string &file_name) {
+
+      }
+
       std::future<void> SubmitWrite(Request &&req) {
           return write_scheduler_.submit([reqs = std::move(req)]() {
               WriteSchedule(reqs);
@@ -204,8 +208,12 @@ namespace LSMKV {
           }
       }
 
-      [[nodiscard]] uint64_t LevelSize(uint64_t level) const {
+      uint32_t NumLevelFiles(uint32_t level) const {
           return status[level].size();
+      }
+
+      uint32_t MaxLevelFiles(uint32_t level) const {
+          return level == 0 ? Option::kL0_CompactionTrigger : 1 << (level + 1);
       }
 
       bool LevelOver(uint64_t level) {
@@ -259,15 +267,16 @@ namespace LSMKV {
           }
       }
 
-      uint64_t NewSequence() {
-          return last_sequence_++;
+      void SetLastSequence(uint64_t seq) {
+          assert(seq > last_sequence_);
+          last_sequence_ = seq;
       }
 
       uint64_t LastSequence() {
           return last_sequence_;
       }
 
-      Executor<1> write_scheduler_;
+      Executor write_scheduler_;
       std::string filename;
       uint64_t fileno = 0;
       uint64_t timestamp_ = 1;

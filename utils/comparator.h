@@ -2,6 +2,8 @@
 
 #include <utility>
 #include <string>
+#include <cassert>
+#include <type_traits>
 
 namespace LSMKV {
   class Slice;
@@ -16,31 +18,45 @@ namespace LSMKV {
       { T::name_impl() } -> std::convertible_to<const char *>;
   };
 
-  template<typename Impl>
   class Comparator {
   public:
-      Comparator() {
+      virtual ~Comparator() = default;
+
+      virtual int compare(const Slice &a, const Slice &b) const = 0;
+
+      virtual void find_shortest_separator(std::string *start, const Slice &limit) const = 0;
+
+      virtual void find_short_successor(std::string *key) const = 0;
+
+      virtual const char *name() const = 0;
+  };
+
+  template<typename Impl>
+  class ComparatorImpl : public Comparator {
+  public:
+      ComparatorImpl() {
           static_assert(comparator<Impl>, "Impl must satisfy the comparator concept");
+          static_assert(!std::is_reference_v<Impl>, "Impl must not be a reference type");
       }
 
-      static int compare(const Slice &a, const Slice &b) {
-          return Impl::compare_impl(a, b);
+      int compare(const Slice &a, const Slice &b) const {
+          return static_cast<const Impl *>(this)->compare_impl(a, b);
       }
 
-      static void find_shortest_separator(std::string *start, const Slice &limit) {
-          return Impl::find_shortest_separator_impl(start, limit);
+      void find_shortest_separator(std::string *start, const Slice &limit) const {
+          return static_cast<const Impl *>(this)->find_shortest_separator_impl(start, limit);
       }
 
-      static void find_short_successor(std::string *key) {
-          return Impl::find_short_successor_impl(key);
+      void find_short_successor(std::string *key) const {
+          return static_cast<const Impl *>(this)->find_short_successor_impl(key);
       }
 
-      static const char *name() {
-          return Impl::name_impl();
+      const char *name() const override {
+          return static_cast<const Impl *>(this)->name_impl();
       }
   };
 
-  class InternalKeyComparator : public Comparator<InternalKeyComparator> {
+  class InternalKeyComparator : public ComparatorImpl<InternalKeyComparator> {
   private:
       static Slice extract_user_key(const Slice &internal_key);
 
@@ -49,9 +65,15 @@ namespace LSMKV {
   public:
       static int compare_impl(const Slice &a, const Slice &b);
 
-      static void find_shortest_separator_impl(std::string *start, const Slice &limit);
+      static void find_shortest_separator_impl(std::string *start, const Slice &limit) {
+          assert(false);
+          return;
+      }
 
-      static void find_short_successor_impl(std::string *key);
+      static void find_short_successor_impl(std::string *key) {
+          assert(false);
+          return;
+      }
 
       static const char *name_impl() {
           return "InternalKeyComparator";
@@ -59,7 +81,7 @@ namespace LSMKV {
   };
 
 
-  class StrComparator : public Comparator<StrComparator> {
+  class StrComparator : public ComparatorImpl<StrComparator> {
   public:
       static int compare_impl(const Slice &a, const Slice &b);
 
@@ -81,7 +103,7 @@ namespace LSMKV {
 
   };
 
-  class NumComparator : public Comparator<NumComparator> {
+  class NumComparator : public ComparatorImpl<NumComparator> {
   public:
       static int compare_impl(const Slice &a, const Slice &b);
 

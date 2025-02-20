@@ -13,6 +13,7 @@
 class Test : public testing::Test {
 public:
     virtual ~Test() = default;
+
 protected:
     static const std::string not_found;
 
@@ -29,6 +30,7 @@ protected:
     void expect(const T &exp, const T &got,
                 const std::string &file, int line) {
         ++nr_tests;
+
         if (exp == got) {
             ++nr_passed_tests;
             return;
@@ -78,6 +80,7 @@ protected:
         std::cout << nr_passed_tests << "/" << nr_tests << " ";
 
         // Count
+        EXPECT_EQ(nr_tests, nr_passed_tests);
         ++nr_phases;
         if (nr_tests == nr_passed_tests) {
             ++nr_passed_phases;

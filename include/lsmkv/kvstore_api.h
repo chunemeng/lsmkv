@@ -10,12 +10,12 @@
 
 class KVStoreAPI {
 public:
-    using status = LSMKV::status;
+    using Status = LSMKV::Status;
     using key_t = const LSMKV::Slice &;
 
-    static status Open(const std::string &dir, const std::string &vlog, KVStoreAPI **ptr);
+    static Status Open(const std::string &dir, const std::string &vlog, KVStoreAPI **ptr);
 
-    static status Open(const std::string &dir, const std::string &vlog, std::unique_ptr<KVStoreAPI> *ptr);
+    static Status Open(const std::string &dir, const std::string &vlog, std::unique_ptr<KVStoreAPI> *ptr);
 
     KVStoreAPI() = default;
 
@@ -31,10 +31,9 @@ public:
      * Insert/Update the key-value pair.
      * No return values for simplicity.
      */
-    virtual status put(LSMKV::Slice key, LSMKV::Slice val) = 0;
+    virtual Status put(LSMKV::Slice key, LSMKV::Slice val) = 0;
 
-
-    virtual status get(LSMKV::Slice key, std::string *val) = 0;
+    virtual Status get(LSMKV::Slice key, std::string *val) = 0;
 
     virtual std::string get(LSMKV::Slice key) = 0;
 
@@ -42,7 +41,7 @@ public:
      * Delete the given key-value pair if it exists.
      * Returns false iff the key is not found.
      */
-    virtual status del(key_t key) = 0;
+    virtual Status del(key_t key) = 0;
 
     /**
      * This resets the kvstore. All key-value pairs should be removed,
@@ -55,7 +54,7 @@ public:
      * keys in the list should be in an ascending order.
      * An empty string indicates not found.
      */
-    virtual status scan(key_t key1, key_t key2, std::list<std::pair<std::string, std::string>> &list) = 0;
+    virtual Status scan(key_t key1, key_t key2, std::list<std::pair<std::string, std::string>> &list) = 0;
 
     /**
      * This reclaims space from vLog by moving valid value and discarding invalid value.

@@ -1,7 +1,3 @@
-//
-// Created by chunemeng on 24-4-3.
-//
-
 #ifndef LSMKV_HANDOUT_PERFORMANCE_H
 #define LSMKV_HANDOUT_PERFORMANCE_H
 

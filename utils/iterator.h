@@ -6,34 +6,33 @@
 #include "slice.h"
 
 namespace LSMKV {
-    class Iterator {
-    public:
-        Iterator() = default;
+  class Iterator {
+  public:
+      Iterator() = default;
 
-        Iterator(const Iterator &) = delete;
+      Iterator(const Iterator &) = delete;
 
-        Iterator &operator=(const Iterator &) = delete;
+      Iterator &operator=(const Iterator &) = delete;
 
-        virtual ~Iterator() = 0;
+      virtual ~Iterator() = 0;
 
-        [[nodiscard]] virtual bool hasNext() const = 0;
+      virtual bool hasNext() const = 0;
 
-        virtual void seekToFirst() = 0;
+      virtual void seekToFirst() = 0;
 
-        virtual void seek(const Slice &target) = 0;
+      virtual void seek(const Slice &target) = 0;
 
-        virtual void next() = 0;
+      virtual void next() = 0;
 
-        virtual void scan(const Slice &K1,
-                          const Slice &K2,
-                          std::list<std::pair<std::string, std::string>> &list) = 0;
+      virtual void seek(const Slice &K1,
+                        const Slice &K2) = 0;
 
-        virtual Slice key() const = 0;
+      virtual Slice key() const = 0;
 
-        virtual Slice value() const = 0;
-    };
+      virtual Slice value() const = 0;
+  };
 
-    inline Iterator::~Iterator() = default;
+  inline Iterator::~Iterator() = default;
 
 }
 

@@ -1,21 +1,21 @@
 #ifndef LSMKV_SRC_TABLE_H
 #define LSMKV_SRC_TABLE_H
 
+#include <map>
+#include <string>
+#include <unordered_set>
+
 #include "memtable.h"
 #include "utils/bloomfilter.h"
 #include "utils/coding.h"
 #include "option.h"
 #include "utils/comparator.h"
-#include <iostream>
-#include <map>
-#include <string>
-#include <unordered_set>
+#include "lsmkv/dbformat.h"
 
 namespace LSMKV {
 //instance of sst
   class Table {
   private:
-      using cmp = StrComparator;
   public:
       explicit Table(const uint64_t &file_no) : file_no(file_no) {
       }
@@ -278,8 +278,8 @@ namespace LSMKV {
       private:
           Table *_table;
           // not include _end!!!!
-          int32_t _cur{};
-          int32_t _end{};
+          uint32_t _cur{};
+          uint32_t _end{};
       };
 
       TableIterator *Iterator() {

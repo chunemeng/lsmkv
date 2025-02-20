@@ -6,7 +6,8 @@
 #include <map>
 #include <string>
 
-#include "dbformat.h"
+#include "lsmkv/dbformat.h"
+#include "format.h"
 #include "option.h"
 #include "skiplist.h"
 #include "utils/arena.h"
@@ -16,65 +17,44 @@
 #include "utils/status.h"
 
 namespace LSMKV {
-using key_type = Slice;
-using value_type = Slice;
-class QueryKey {
-  uint32_t len_;
-  std::unique_ptr<char[]> rep_;
+  inline static Slice GetValueFromMemKey(Slice key);
 
-public:
-  QueryKey(SequenceNumber seq, ValueType type, key_type key) {
-    len_ = key.size() + 12;
-    rep_ = std::make_unique<char[]>(len_);
-    char *p = rep_.get();
-    EncodeFixed32(p, key.size());
-    memcpy(p + 4, key.data(), key.size());
-    EncodeFixed64(p + 4 + key.size(), (seq << 8) | type);
-  }
+  inline static Slice GetKeyFromMemKey(Slice key);
 
-  Slice mem_key() const { return {rep_.get(), len_}; }
-};
+  struct MemKeyComporator {
+      static int compare(const Slice &a, const Slice &b) {
+          auto ka = GetKeyFromMemKey(a);
+          auto kb = GetKeyFromMemKey(b);
+          return InternalKeyComparator::compare_impl(ka, kb);
+      }
+  };
 
-inline static Slice GetValueFromInternalKey(Slice key);
+  class MemTable {
+  public:
+      using Table = Skiplist<Slice, MemKeyComporator>;
 
-inline static Slice GetKeyFromInternalKey(Slice key);
+      explicit MemTable();
 
-struct MemKeyComporator {
-  static int compare(const key_type &a, const key_type &b) {
-    auto ka = GetKeyFromInternalKey(a);
-    auto kb = GetKeyFromInternalKey(b);
-    return InternalKeyComparator::compare(ka, kb);
-  }
-};
+      Status put(SequenceNumber seq, Slice key, Slice value);
 
-class MemTable {
-public:
-  using Table = Skiplist<key_type, MemKeyComporator>;
+      bool get(const QueryKey& key, VLogEntryInfo *val, Status *s) const;
 
-  explicit MemTable();
+      bool contains(const Slice &key) const;
 
-  void put(SequenceNumber seq, ValueType type, Slice key, Slice value);
+      Iterator *newIterator();
 
-  void del(SequenceNumber seq, ValueType type, Slice key);
+      uint32_t memoryUsage() const;
 
-  bool get(SequenceNumber seq, key_type key, Slice &val, status &s) const;
+      ~MemTable();
 
-  bool contains(const Slice &key) const;
+  private:
+      // satisfy the concept of Table
+      friend class MemTableIterator;
 
-  Iterator *newIterator();
-
-  [[nodiscard]] size_t memoryUsage() const;
-
-  ~MemTable();
-
-private:
-  // satisfy the concept of Table
-  friend class MemTableIterator;
-
-  uint64_t size = 0;
-  Arena arena;
-  Table table;
-};
+      std::atomic<uint32_t> size = 0;
+      Arena arena;
+      Table table;
+  };
 } // namespace LSMKV
 
 #endif // MEMTABLE_H

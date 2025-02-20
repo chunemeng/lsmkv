@@ -8,19 +8,26 @@ namespace LSMKV {
       ~Option() = default;
 
       static constexpr bool isFilter = true;
-      static constexpr int pair_size_ = 290;
+
       static constexpr bool use_double_k_ = false;
-      static constexpr bool use_rb_tree_ = false;
-      static constexpr int key_size_ = pair_size_ * 20;
-      static constexpr int k_header_size_ = 32;
+
+      static constexpr int sst_footer_size_ = 32;
+
       static constexpr int sst_file_size_ = 16 * 1024;
+
       static constexpr int bloom_size_ = 8192;
+
       static constexpr int k_vlog_header_size_ = 15;
 
-      static constexpr int mem_max_size_ = sst_file_size_ - bloom_size_ - k_header_size_;
+      static constexpr int mem_max_size_ = sst_file_size_ - bloom_size_ - sst_footer_size_;
 
+      static constexpr int kL0_CompactionTrigger = 4;
 
-      static constexpr bool sync_wal_ = true;
+      static constexpr int kBlockTrailerSize = 2;
+
+      static constexpr bool allow_concurrent_immtable_write = false;
+
+      static constexpr int block_size = 4096;
 
       static_assert(bloom_size_ > 0);
 

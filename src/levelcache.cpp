@@ -1,93 +1,37 @@
 #include "levelcache.h"
+#include <shared_mutex>
 
 namespace LSMKV {
 
-  LevelCache::LevelCache(std::string db_path, Version *v) : db_name_(std::move(db_path)) {
+  LevelCache::LevelCache(std::string db_path, Version *v, std::shared_mutex *rwlock) : db_name_(
+          std::move(db_path)), cmp_(new InternalKeyComparator()), vlog_reader_(db_name_),
+                                                                                       sst_reader_(db_name_),
+                                                                                       rwlock_(rwlock) {
       cache.reserve(16);
-      for (int i = 0; i < 8; ++i) {
-          cache.emplace_back();
-      }
-      std::vector<std::string> dirs;
-      std::vector<std::string> files;
-      utils::scanDirs(db_name_, dirs);
-      Slice result;
-      std::unique_ptr<char[]> raw;
+      cache.resize(8);
+//      for (int i = 0; i < 8; ++i) {
+//          cache.emplace_back();
+//      }
+//      std::vector<std::string> dirs;
+//      std::vector<std::string> files;
+//      utils::scanDirs(db_name_, dirs);
+//      Slice result;
+//      std::unique_ptr<char[]> raw;
 
-      RandomReadableFile *file;
-      bool s;
-      std::string path_name = db_name_ + "/";
-      size_t dir_size;
-      size_t file_size;
-      uint64_t dir_level;
-      uint64_t cur_level = 7;
-
-      raw = std::make_unique<char[]>(16 * 1024);
-      dir_size = path_name.length();
-      for (auto &dir: dirs) {
-          files.clear();
-          path_name.append(dir);
-          path_name.append("/");
-          file_size = path_name.size();
-          utils::scanDir(path_name, files);
-          dir_level = atoll(&dir[6]);
-
-          if (v->NeedNewLevel(dir_level)) {
-              v->AddNewLevel(dir_level - v->GetTreeLevel());
-          }
-          if (dir_level > cur_level) {
-              for (; cur_level <= dir_level; ++cur_level) {
-                  cache.emplace_back();
-              }
-          }
-
-          for (auto &file_name: files) {
-              path_name.append(file_name);
-              v->LoadStatus(dir_level, stoll(file_name));
-              s = NewRandomReadableFile(path_name, &file);
-              if (!s) {
-                  continue;
-              }
-              s = file->Read(0, 16 * 1024, &result, raw.get());
-              if (!s || result.empty()) {
-                  delete file;
-                  continue;
-              }
-
-              auto it = new TableIterator(new Table(result.data(), stoll(file_name)));
-              cache[dir_level].emplace(it->timestamp(), it);
-
-              delete file;
-              path_name.resize(file_size);
-          }
-          path_name.resize(dir_size);
-      }
+//      RandomReadableFile *file;
+//      bool s;
+//      std::string path_name = db_name_ + "/";
+//      size_t dir_size;
+//      size_t file_size;
+//      uint64_t dir_level;
+//      uint64_t cur_level = 7;
+//
+//      raw = std::make_unique<char[]>(16 * 1024);
+//      dir_size = path_name.length();
   }
 
   LevelCache::~LevelCache() {
-      delete table_cache;
-
-      for (const auto &level: cache) {
-          for (const auto &it: level) {
-              delete it.second;
-          }
-      }
-      cache.clear();
-  }
-
-  void LevelCache::LogLevel(uint64_t level, int i) {
-
-      for (auto &t: cache[level]) {
-          auto dit = t.second;
-          dit->seekToFirst();
-          auto tmm = dit->value().data();
-          void *ptr = const_cast<char *>(tmm);
-          while (dit->hasNext()) {
-              std::cout << i << " ptr: " << ptr << "key: " << dit->key() << " offset: "
-                        << DecodeFixed64(dit->value().data()) << " size: " << DecodeFixed32(dit->value().data() + 8)
-                        << std::endl;
-              dit->next();
-          }
-      }
+      delete cmp_;
   }
 
   uint64_t LevelCache::CompactionSST(uint64_t level,
@@ -96,143 +40,7 @@ namespace LSMKV {
                                      std::vector<uint64_t> *old_file_nos,
                                      std::vector<uint64_t> &need_to_move,
                                      std::vector<WriteSlice> &need_to_write) {
-      // NEED LEVEL-N AND LEVEL-N+1 FILE_NOS
-
-      // key is timestamp_, value is iterator
-      std::multimap<uint64_t, std::multimap<uint64_t, TableIterator *>::iterator> choose_this_level;
-      //         tmp value
-      //        auto choose_it = choose_this_level.begin();
-      std::pair<uint64_t, TableIterator *> it;
-      // size of sst need to read
-      TableIterator *tmp;
-      // timestamp_ need to update
-      uint64_t timestamp = 0;
-
-      // STRANGE BUG THAT CANT INSERT INTO UNORDERED_SET
-      // key is level, to fix bug in the same timestamp_
-      std::vector<std::unique_ptr<TableIterator>> wait_to_merge;
-      // add new level
-      if (level > cache.size()) [[unlikely]] {
-          size_t j = cache.size();
-          for (size_t i = j; i <= level + 1; ++i) {
-              cache.emplace_back();
-          }
-      }
-      bool isDrop = cache[level + 1].empty();
-
-      // store the sst with same timestamp_
-      std::priority_queue<std::multimap<uint64_t, TableIterator *>::iterator,
-              std::vector<std::multimap<uint64_t, TableIterator *>::iterator>,
-              CmpKey>
-              que;
-
-      bool isFull = false;
-      // iterator comparator
-      CmpKey cmp;
-
-      // pick sst in size
-      for (auto rit = cache[level].begin(); rit != cache[level].end(); ++rit) {
-          it = *rit;
-          if (isFull) {
-              // continue to find the smallest key sst with same timestamp_
-              if (timestamp < it.first) {
-                  while (!que.empty()) {
-                      choose_this_level.emplace(timestamp, que.top());
-                      que.pop();
-                  }
-                  break;
-              } else {
-                  if (cmp(rit, que.top())) {
-                      que.pop();
-                      que.push(rit);
-                  }
-              }
-          } else {
-              if (size - 1 == choose_this_level.size() + que.size()) {
-                  isFull = true;
-              }
-              if (it.first == timestamp) {
-                  que.push(rit);
-              } else {
-                  while (!que.empty()) {
-                      choose_this_level.emplace(timestamp, que.top());
-                      que.pop();
-                  }
-                  assert(it.first > timestamp);
-                  timestamp = it.first;
-                  que.push(rit);
-              }
-          }
-      }
-
-      while (!que.empty()) {
-          choose_this_level.emplace(timestamp, que.top());
-          que.pop();
-      }
-
-      // DIRECTLY Move TO NEXT LEVEL
-      if (cache[level + 1].empty() && level != 0) {
-          for (auto &cit: choose_this_level) {
-              tmp = cit.second->second;
-              tmp->setTimestamp(timestamp);
-              need_to_move.emplace_back(tmp->file_no());
-              cache[level].erase(cit.second);
-              cache[level + 1].emplace(timestamp, tmp);
-          }
-          return timestamp;
-      }
-      // read the smallest and largest key in this level
-      Slice smallest_key;
-      bool first = true;
-      Slice largest_key;
-      for (auto &cit: choose_this_level) {
-          tmp = ((cit.second))->second;
-
-          if (first) {
-              first = false;
-              smallest_key = tmp->SmallestKey();
-              largest_key = tmp->LargestKey();
-          } else {
-              smallest_key = std::min(smallest_key, tmp->SmallestKey());
-              largest_key = std::max(largest_key, tmp->LargestKey());
-          }
-          old_file_nos[0].emplace_back(tmp->file_no());
-          tmp->seekToFirst();
-          wait_to_merge.emplace_back(tmp);
-          cache[level].erase(cit.second);
-      }
-      assert(!first);
-
-      choose_this_level.clear();
-
-      // Read ALL Conflicted file In NextLevel
-      for (auto rit = cache[level + 1].begin(); rit != cache[level + 1].end(); ++rit) {
-          it = *rit;
-          if (it.second->InRange(smallest_key, largest_key)) {
-              timestamp = std::max(it.first, timestamp);
-              choose_this_level.emplace((*rit).first, rit);
-          }
-      }
-
-      // START ALL ITERATOR AT START STATE
-      for (auto &cit: choose_this_level) {
-          tmp = (*(cit.second)).second;
-          tmp->seekToFirst();
-          old_file_nos[1].emplace_back(tmp->file_no());
-          wait_to_merge.emplace_back(tmp);
-          cache[level + 1].erase(cit.second);
-      }
-
-      if (wait_to_merge.size() == 1) [[unlikely]] {
-          tmp = wait_to_merge[0].release();
-          tmp->setTimestamp(timestamp);
-          need_to_move.emplace_back(tmp->file_no());
-          cache[level + 1].emplace(timestamp, tmp);
-          return timestamp;
-      }
-      // START MERGE
-      Merge(file_no, level, timestamp, isDrop, wait_to_merge, need_to_write);
-      return timestamp;
+      return 0;
   }
 
 // key = U64_MAX and timestamp_ = 0 is end
@@ -348,145 +156,30 @@ namespace LSMKV {
                          bool isDrop,
                          std::vector<std::unique_ptr<TableIterator>> &wait_to_merge,
                          std::vector<WriteSlice> &need_to_write) {
-      // ERROR AFTER MERGE THE SIZE MAY BE NOT SAME TO SIZE
-      // file_no to generate a new file
-      // if the last one is full and not compaction will directly move
-      // THE OFFSET START TO WRITE (BLOOM_SIZE AND HEADER_SIZE)
-      constexpr auto bloom_length = LSMKV::Option::bloom_size_ + 32;
-      uint64_t key_offset = bloom_length;
-      //  // TableIterator need to move next
-      //  std::vector<decltype(wait_to_merge.begin())> need_to_next;
 
-      // the key is key
-      std::map<uint64_t, std::pair<uint64_t, Slice>> merged_sst;
-      auto n = wait_to_merge.size();
-      {
-          // init loser_tree
-          LoserTree *loser = LoserTree::CreateLoser(n, wait_to_merge);
-          TableIterator *iter;
-          size_t index;
-          size_t old_index;
-          Slice wait_insert_key{};
-          uint64_t cur_timestamp;
-          int i;
-          Slice value_slice;
-          do {
-              cur_timestamp = 0;
-              if (loser->end()) [[unlikely]] {
-                  break;
-              }
-
-              table_cache = new Table(file_no++);
-              char *tmp = table_cache->reserve(16384);
-              memset(tmp, 0, 16384);
-
-              for (i = 0;; loser->increment()) {
-                  iter = loser->top_iter(index);
-
-                  // if the timestamp_ is 0, the sst is ended
-                  if (iter->timestamp() == 0) [[unlikely]] {
-                      break;
-                  }
-
-                  if (cur_timestamp != 0 && (wait_insert_key == iter->key())) {
-                      if (cur_timestamp > iter->timestamp()) {
-                          continue;
-                      } else if (cur_timestamp == iter->timestamp()) [[unlikely]] {
-                          if (old_index < index) {
-                              continue;
-                          }
-                      }
-                      // redo the last key
-                      // cause this timestamp_ is bigger than the last one
-                      key_offset -= 20;
-                      i--;
-                  }
-
-                  // full of the sst
-                  if (i == 408) [[unlikely]] {
-                      break;
-                  }
-
-                  wait_insert_key = iter->key();
-
-                  value_slice = iter->value();
-                  old_index = index;
-                  cur_timestamp = iter->timestamp();
-
-                  // discard the tombstone unless meet the last level
-                  if (!isDrop || DecodeFixed32(value_slice.data() + 8)) [[likely]] {
-                      ++i;
-                      // WRITE KEY AND OFFSET
-                      // TODO: variable length key
-                      assert(wait_insert_key.size() == 8);
-                      memcpy(tmp + key_offset, wait_insert_key.data(), wait_insert_key.size());
-
-                      key_offset += wait_insert_key.size();
-
-                      memcpy(tmp + key_offset, value_slice.data(), value_slice.size());
-                      key_offset += value_slice.size();
-                  }
-              }
-
-              if (i == 0) [[unlikely]] {
-                  delete table_cache;
-                  continue;
-              }
-
-              EncodeFixed64(tmp, timestamp);
-              // WRITE PAIR COUNT
-              EncodeFixed64(tmp + 8, i);
-              // WRITE MIN KEY
-              // TODO: variable length key
-              memcpy(tmp + 16, tmp + bloom_length, 8);
-              // WRITE MAX KEY
-              memcpy(tmp + 24, wait_insert_key.data(), 8);
-              Slice tmp_slice = Slice(tmp, i * 20 + bloom_length);
-              // todo bug when use emplace_back
-              need_to_write.emplace_back(tmp, i * 20 + bloom_length);
-              auto iterator = new TableIterator(table_cache);
-
-              table_cache->pushCache(tmp_slice.data());
-              cache[level + 1].emplace(timestamp, iterator);
-              key_offset = bloom_length;
-          } while (cur_timestamp);
-          table_cache = nullptr;
-          loser->m_way_.clear();
-          free(loser);
-      }
   }
 
   void LevelCache::reset() {
-      delete table_cache;
-      for (auto &level: cache) {
-          for (auto &it: level) {
-              delete it.second;
-          }
-          level.clear();
-      }
+      cache.clear();
   }
 
-  char *LevelCache::ReserveCache(size_t size, size_t pair_size, const uint64_t &file_no) {
-      assert(table_cache == nullptr);
-      table_cache = new Table(file_no);
-      return table_cache->reserve(size);
-  }
 
   void LevelCache::scan(const Slice &K1, const Slice &K2, std::map<std::string, std::string> &key_map) {
-      auto it = key_map.begin();
-      TableIterator *table;
-      for (const auto &level: cache) {
-          for (auto &table_pair: std::ranges::reverse_view(level)) {
-              table = table_pair.second;
-              table->seek(K1, K2);
-              while (table->hasNext()) {
-                  // First insert the key with larger timestamp_
-                  // if meet the same key, emplace will fail
-                  key_map.emplace(table->key(), std::string{table->value().data(), table->value().size()});
-                  table->next();
-              }
-          }
-      }
+//      auto it = key_map.begin();
+//      TableIterator *table;
+//      std::shared_lock lock(*rwlock_);
+//      for (const auto &level: cache) {
+//          for (auto &table_pair: std::ranges::reverse_view(level)) {
+//              table = table_pair.second;
+//              table->seek(K1, K2);
+//              while (table->hasNext()) {
+//                  // First insert the key with larger timestamp_
+//                  // if meet the same key, emplace will fail
+//                  key_map.emplace(table->key(), std::string{table->value().data(), table->value().size()});
+//                  table->next();
+//              }
+//          }
+//      }
   }
 
   uint64_t BinarySearchSST(const char *start, Slice key, uint64_t size) {
@@ -508,42 +201,86 @@ namespace LSMKV {
       return size;
   }
 
-  status LevelCache::get(const Slice &key, std::string &val) {
-      TableIterator *table;
-      for (const auto &level: cache) {
-          for (auto &it: std::ranges::reverse_view(level)) {
-              table = it.second;
-              table->seek(key);
-              if (table->hasNext()) {
-                  val = table->value().toString();
-                  return status::OK();
+  Status LevelCache::get(const QueryKey &key, VLogEntryInfo *info) {
+      std::shared_lock lock(*rwlock_);
+
+      Status s = Status::NotFound();
+
+      {
+          const auto &level0 = cache[0];
+          std::vector<const SSTFileMeta *> tmp;
+
+          for (const auto &it: std::ranges::reverse_view(level0)) {
+              if (it.second.InRange(key)) {
+                  tmp.emplace_back(std::addressof(it.second));
               }
           }
+
+
+          if (!tmp.empty()) {
+              s = sst_reader_.ReadBatch(tmp, key.internal_key(), info);
+          }
       }
-      return status::notFound();
+
+      if (s.IsNotFound()) {
+          for (auto i = 1; i < cache.size(); ++i) {
+              const auto &level = cache[i];
+              std::vector<const SSTFileMeta *> tmp;
+
+              for (const auto &it: std::ranges::reverse_view(level)) {
+                  if (it.second.InRange(key)) {
+                      tmp.emplace_back(std::addressof(it.second));
+                  }
+              }
+
+              if (!tmp.empty()) {
+                  s = sst_reader_.ReadBatch(tmp, key.internal_key(), info);
+              }
+          }
+
+      }
+
+      return s;
   }
 
   bool LevelCache::empty() const {
       return cache.empty();
   }
 
-  status LevelCache::GetOffset(const Slice &key, uint64_t &offset) {
-      TableIterator *table;
-      for (auto &level: cache) {
-          for (const auto &it: std::ranges::reverse_view(level)) {
-              table = it.second;
-              table->seek(key);
-              if (table->hasNext()) {
-                  // if newest of value is deleted, no need to restore when gc
-                  if (DecodeFixed32(table->value().data() + 8) == 0) {
-                      return status::notFound();
-                  }
-                  offset = DecodeFixed64(table->value().data());
-                  return status::OK();
-              }
-          }
+  Status LevelCache::GetOffset(const Slice &key, uint64_t &offset) {
+//      TableIterator *table;
+//      std::shared_lock lock(*rwlock_);
+//      for (auto &level: cache) {
+//          for (const auto &it: std::ranges::reverse_view(level)) {
+//              table = it.second;
+//              table->seek(key);
+//              if (table->hasNext()) {
+//                  // if newest of value is deleted, no need to restore when gc
+//                  if (DecodeFixed32(table->value().data() + 8) == 0) {
+//                      return Status::NotFound();
+//                  }
+//                  offset = DecodeFixed64(table->value().data());
+//                  return Status::OK();
+//              }
+//          }
+//      }
+      return Status::NotFound();
+  }
+
+  void LevelCache::AddFile(int level, uint64_t file, uint64_t file_size, const InternalKey &smallest,
+                           const InternalKey &largest) {
+      SSTFileMeta f{};
+      f.file_number_ = file;
+      f.file_size_ = file_size;
+      f.level_ = level;
+      f.smallest = smallest;
+      f.largest = largest;
+
+      if (level >= cache.size()) {
+          cache.emplace_back();
       }
-      return status::notFound();
+
+      cache[level].emplace(f.file_number_, f);
   }
 
   template<typename function>
