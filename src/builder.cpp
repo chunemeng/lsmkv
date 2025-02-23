@@ -8,23 +8,25 @@ namespace LSMKV {
       iter->seekToFirst();
       std::string vlog_buf;
 
-      if (iter->hasNext()) {
+      if (iter->valid()) {
           WritableFile *file;
 
-          std::string fname = SSTFileName(db_info.dbname, v->fileno);
+          auto file_number = v->NewSSTFileNumber();
+
+          std::string fname = SSTFileName(db_info.dbname, file_number);
 
           Status s = NewWritableFile(fname, &file);
           if (!s.ok()) {
               return s;
           }
-          meta->file_number_ = v->fileno;
+          meta->file_number_ = file_number;
           meta->smallest.DecodeFrom(iter->key());
           {
               Comparator *cmp = new InternalKeyComparator();
 
               TableBuilder builder{file, cmp};
               Slice key;
-              for (; iter->hasNext(); iter->next()) {
+              for (; iter->valid(); iter->next()) {
                   key = iter->key();
                   builder.Add(key, iter->value());
               }
@@ -82,7 +84,7 @@ namespace LSMKV {
 
           if (s.ok() && meta->file_size_ > 0) {
               // Keep it
-              v->fileno++;
+              v->SetSSTFileNumber(file_number + 1);
           } else {
               v->RemoveFile(fname);
           }
@@ -115,13 +117,13 @@ namespace LSMKV {
       // write
       WriteSlice(need_to_write, level, v);
       // update level status
-      v->AddNewLevelStatus(level + 1, v->fileno - need_to_write.size(), need_to_write.size());
+      v->AddNewLevelStatus(level + 1, v->fileno_ - need_to_write.size(), need_to_write.size());
       // remove old sst
       v->ClearLevelStatus(level, old_files);
 
       // PASS THE COMPACTION
       if (s.ok() && v->LevelOver(level + 1)) {
-          s = SSTCompaction(level + 1, v->fileno, v, kc);
+          s = SSTCompaction(level + 1, v->fileno_, v, kc);
       }
       return s;
   }
@@ -131,7 +133,7 @@ namespace LSMKV {
       std::vector<std::future<void>> tasks;
       tasks.reserve(need_to_write.size());
       for (auto &s: need_to_write) {
-          Request req = {true, SSTFilePath(dbname, level + 1, v->fileno++), s};
+          Request req = {true, SSTFilePath(dbname, level + 1, v->fileno_++), s};
           tasks.emplace_back(std::move(v->SubmitWrite(std::move(req))));
       }
       for (auto &fu: tasks) {

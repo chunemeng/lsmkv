@@ -1,6 +1,8 @@
 #pragma once
 
 #include <string>
+#include <utility>
+#include <memory>
 
 #include "utils/slice.h"
 #include "utils/coding.h"
@@ -55,28 +57,39 @@ namespace LSMKV {
 
   class InternalKey {
   public:
-      InternalKey() {}
+      InternalKey() = default;
 
-      bool DecodeFrom(const Slice &s) {
-          rep_.assign(s.data(), s.size());
-          return !rep_.empty();
+      InternalKey(InternalKey &&) = default;
+
+      InternalKey &operator=(InternalKey &&) = default;
+
+      InternalKey(const InternalKey &) = delete;
+
+      InternalKey &operator=(const InternalKey &) = delete;
+
+      void DecodeFrom(const Slice &s) {
+          rep_.reset();
+          rep_ = std::make_unique<char[]>(s.size());
+          memcpy(rep_.get(), s.data(), s.size());
+          size_ = s.size();
       }
 
-      Slice user_key() const { return ExtractUserKey(rep_); }
+      Slice user_key() const { return ExtractUserKey(Encode()); }
 
-      ValueType type() const { return ExtractValueType(rep_); }
+      ValueType type() const { return ExtractValueType(Encode()); }
 
       SequenceNumber sequence() const {
-          return DecodeFixed64(rep_.data() + rep_.size() - 8) >> 8;
+          return DecodeFixed64(rep_.get() + size_ - 8) >> 8;
       }
 
       Slice Encode() const {
-          assert(!rep_.empty());
-          return rep_;
+          assert(size_ != 0);
+          return {rep_.get(), size_};
       }
 
   private:
-      std::string rep_;
+      uint32_t size_;
+      std::unique_ptr<char[]> rep_;
   };
 
   static constexpr SequenceNumber kMaxSequenceNumber = ((0x1ull << 56) - 1);

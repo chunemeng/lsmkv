@@ -85,8 +85,6 @@ private:
     Status GetImpl(LSMKV::Slice key, std::string *val);
 
     Status WriteImpl(LSMKV::Slice key, LSMKV::Slice val, LSMKV::ValueType type);
-
-
 public:
     KVStore(const std::string &dir, const std::string &vlog);
 

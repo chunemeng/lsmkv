@@ -34,7 +34,9 @@ KVStore::KVStore(const std::string &dir, const std::string &vlog)
         : db_info(dir, vlog), mem_(std::make_shared<LSMKV::MemTable>()), imm_(nullptr), vlog_reader_(dir) {
     version_ = new LSMKV::Version(DBName());
     vlog_ = new LSMKV::VLogBuilder(DBName());
-    vlog_->Open(0);
+    auto vlog_no = version_->NewVLogFileNumber();
+    vlog_->Open(vlog_no);
+    version_->SetVLogFileNumber(1 + vlog_no);
     kc = new LSMKV::LevelCache(dir, version_, &compaction_lock_);
     cache = new LSMKV::Cache();
 }
@@ -212,6 +214,23 @@ Status KVStore::WriteImpl(LSMKV::Slice key, LSMKV::Slice val, LSMKV::ValueType t
     if (type == LSMKV::kTypeDeletion) {
         s = mem_->put(seq, key, {});
     } else {
+        if (vlog_->Full(val.size())) {
+            s = vlog_->Close();
+
+            auto vlog_no = version_->NewVLogFileNumber();
+
+            if (s.ok()) {
+                vlog_->Open(vlog_no);
+            }
+
+            if (!s.ok()) {
+                return s;
+            }
+
+            version_->SetVLogFileNumber(vlog_no + 1);
+        }
+
+
         s = vlog_->Append(seq, key, val, &info);
 
         if (s.ok()) {
@@ -323,9 +342,14 @@ void KVStore::reset() {
     imm_ = nullptr;
 
     utils::rmfiles(DBName());
-    vlog_->reset();
-    vlog_->Open(0);
+
     version_->reset();
+
+    auto vlog_no = version_->NewVLogFileNumber();
+    vlog_->reset();
+    vlog_->Open(vlog_no);
+
+    version_->SetVLogFileNumber(vlog_no + 1);
     kc->reset();
     mem_ = std::make_shared<LSMKV::MemTable>();
 }
@@ -337,57 +361,64 @@ void KVStore::reset() {
  */
 Status KVStore::scan(key_t key1, key_t key2,
                      std::list<std::pair<std::string, std::string>> &list) {
-    std::list<std::pair<std::string, std::string>> tmp_list;
+    auto seq = version_->LastSequence();
+    LSMKV::QueryKey query_key1{seq, key1};
+    LSMKV::QueryKey query_key2{seq, key2};
+
+
+    std::map<std::string, std::string> map;
     {
+
+        std::string last_key;
         std::shared_ptr<LSMKV::MemTable> imm;
         {
             std::shared_lock lock(rwlock_);
             LSMKV::Iterator *iter = mem_->newIterator();
             imm = imm_.load(std::memory_order_acquire);
-            iter->seek(key1, key2);
+            iter->seek(query_key1.mem_key(), query_key2.mem_key());
 
-            while (iter->hasNext()) {
-                tmp_list.emplace_back(iter->key(), iter->value());
-                iter->next();
-            }
+            LSMKV::Scan(&map, iter, seq);
 
             delete iter;
         }
 
         {
             if (imm != nullptr) {
-                LSMKV::Iterator *iter_ = imm->newIterator();
-                std::list<std::pair<std::string, std::string>> tmp_list_;
-                iter_->seek(key1, key2);
+                LSMKV::Iterator *iter = imm->newIterator();
+                iter->seek(key1, key2);
 
-                while (iter_->hasNext()) {
-                    tmp_list_.emplace_back(iter_->key(), iter_->value());
-                    iter_->next();
-                }
+                LSMKV::Scan(&map, iter, seq);
 
-                tmp_list.merge(tmp_list_);
-                delete iter_;
+                delete iter;
             }
         }
     }
 
 
-    std::map<std::string, std::string> map;
-    kc->scan(key1, key2, map);
-
-    LSMKV::RandomReadableFile *files;
-    std::map<std::string, std::string> tmp_map;
-    tmp_map.insert(tmp_list.begin(), tmp_list.end());
-
-    tmp_map.merge(map);
-    for (auto &it: tmp_map) {
-        if (LSMKV::ExtractValueType(it.first) == LSMKV::kTypeValue) {
+    kc->scan(query_key1.internal_key(), query_key2.internal_key(), &map);
 
 
-            list.emplace_back(LSMKV::ExtractUserKey(it.first), it.second);
+    for (auto &it: map) {
+        list.emplace_back(it.first, it.second);
+    }
+    Status status = Status::OK();
+    for (auto it = list.begin(); it != list.end(); it++) {
+        if (it->second.empty()) {
+            list.erase(it);
+            continue;
+        }
+        LSMKV::VLogEntryInfo info{};
+        status = info.Decode(it->second);
+        if (!status.ok()) {
+            break;
+        }
+        status = vlog_reader_.Read(info, &it->second);
+        if (!status.ok()) {
+            break;
         }
     }
-    return Status::OK();
+
+    return status;
 }
 
 Status KVStore::GetOffset(key_t key, LSMKV::VLogEntryInfo *offset) {
@@ -519,7 +550,6 @@ void KVStore::gc(uint64_t chunk_size) {
 Status KVStore::WriteLevel0Table(std::shared_ptr<LSMKV::MemTable> &&imm) {
     // TODO: make all below without lock
     LSMKV::SSTFileMeta meta;
-    meta.file_number_ = version_->NewFileNumber();
 
     LSMKV::Iterator *iter = imm->newIterator();
 
@@ -537,15 +567,14 @@ Status KVStore::WriteLevel0Table(std::shared_ptr<LSMKV::MemTable> &&imm) {
     // should not be added to the manifest.
     int level = 0;
     if (s.ok() && meta.file_size_ > 0) {
+        version_->SetSSTFileNumber(meta.file_number_ + 1);
+
         const LSMKV::Slice min_user_key = meta.smallest.user_key();
         const LSMKV::Slice max_user_key = meta.largest.user_key();
 //        if (base != nullptr) {
 //            level = base->PickLevelForMemTableOutput(min_user_key, max_user_key);
 //        }
-        kc->AddFile(level, meta.file_number_, meta.file_size_, meta.smallest,
-                    meta.largest);
-
-
+        kc->AddFile(&meta);
     }
 
 //    CompactionStats stats;

@@ -18,58 +18,6 @@
 #include <vector>
 
 namespace LSMKV {
-//  class WriteScheduler {
-//  public:
-//      struct Request {
-//          bool isWrite_;
-//          std::string file_name;
-//          WriteSlice slice;
-//          std::promise<void> callback_;
-//      };
-//
-//      explicit WriteScheduler(int size) {
-//          for (int i = 0; i < size; i++) {
-//              background_thread_.emplace_back([&] { StartSchedule(); });
-//          }
-//      }
-//
-//      ~WriteScheduler() {
-//          for (int i = 0; i < background_thread_.size(); i++) {
-//              request_queue_.push(std::nullopt);
-//          }
-//          background_thread_.clear();
-//      }
-//
-//      void Schedule(Request r) {
-//          request_queue_.push(std::move(r));
-//      }
-//
-//      void StartSchedule() {
-//          std::optional<Request> req;
-//          WritableNoBufFile *file;
-//          while ((req = std::move(request_queue_.pop())) != std::nullopt) {
-//              if (req->isWrite_) {
-//                  WriteSlice s = req->slice;
-//                  char *tmp = s.data();
-//                  memset(tmp + 32, 0, bloom_size);
-//                  CreateFilter(tmp + bloom_size + 32, DecodeFixed64(tmp + 8), 20, tmp + 32);
-//                  NewWritableNoBufFile(req->file_name, &file);
-//                  file->WriteUnbuffered(tmp, s.size());
-//                  delete file;
-//                  req->callback_.set_value();
-//              } else {
-//                  utils::rmfile(req->file_name);
-//                  req->callback_.set_value();
-//              }
-//          }
-//      };
-//
-//  private:
-//      Queue<std::optional<Request>> request_queue_;
-//      /** The background thread responsible for issuing scheduled requests to the disk manager. */
-//      std::vector<std::jthread> background_thread_;
-//  };
-
   struct Request {
       bool isWrite_;
       std::string file_name;
@@ -113,7 +61,7 @@ namespace LSMKV {
               char buf[40];
               file->Read(0, 40, &slice, buf);
               if (slice.size() == 40) {
-                  fileno = DecodeFixed64(buf);
+                  fileno_ = DecodeFixed64(buf);
                   timestamp_ = DecodeFixed64(buf + 8);
                   max_level = DecodeFixed64(buf + 32);
               }
@@ -134,7 +82,7 @@ namespace LSMKV {
           NewWritableNoBufFile(v->filename, &file);
 
           char buf[40];
-          EncodeFixed64(buf, v->fileno);
+          EncodeFixed64(buf, v->fileno_);
           EncodeFixed64(buf + 8, v->timestamp_);
           EncodeFixed64(buf + 16, v->head);
           EncodeFixed64(buf + 24, v->tail);
@@ -154,7 +102,8 @@ namespace LSMKV {
       }
 
       void reset() {
-          fileno = 0;
+          fileno_ = 0;
+          last_vlog_file_no_ = 0;
           timestamp_ = 1;
           head = 0;
           tail = 0;
@@ -257,14 +206,32 @@ namespace LSMKV {
           return status[level];
       }
 
-      uint64_t NewFileNumber() {
-          return last_file_no_++;
+      uint64_t NewVLogFileNumber() {
+          return last_vlog_file_no_;
       }
 
-      void ReuseFileNumber(uint64_t file_no) {
-          if (file_no + 1 == last_file_no_) {
-              last_file_no_ = file_no;
+      uint64_t NewSSTFileNumber() {
+          return fileno_++;
+      }
+
+      uint64_t ReuseSSTFileNumber(uint64_t file_no) {
+          if (fileno_ + 1 == file_no) {
+              fileno_ = file_no;
           }
+      }
+
+      void ReuseVLogFileNumber(uint64_t file_no) {
+          if (file_no + 1 == last_vlog_file_no_) {
+              last_vlog_file_no_ = file_no;
+          }
+      }
+
+      void SetSSTFileNumber(uint64_t file_no) {
+          fileno_ = file_no;
+      }
+
+      void SetVLogFileNumber(uint64_t file_no) {
+          last_vlog_file_no_ = file_no;
       }
 
       void SetLastSequence(uint64_t seq) {
@@ -278,13 +245,13 @@ namespace LSMKV {
 
       Executor write_scheduler_;
       std::string filename;
-      uint64_t fileno = 0;
+      uint64_t fileno_ = 0;
       uint64_t timestamp_ = 1;
       uint64_t head = 0;
       uint64_t tail = 0;
       uint64_t max_level = 7;
       uint64_t last_sequence_ = 0;
-      uint64_t last_file_no_ = 0;
+      uint64_t last_vlog_file_no_ = 0;
       std::vector<std::set<uint64_t>> status;
   };
 }

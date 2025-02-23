@@ -16,7 +16,7 @@ namespace LSMKV {
 
       virtual ~Iterator() = 0;
 
-      virtual bool hasNext() const = 0;
+      virtual bool valid() const = 0;
 
       virtual void seekToFirst() = 0;
 

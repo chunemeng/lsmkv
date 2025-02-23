@@ -17,10 +17,53 @@
 #include "table.h"
 #include "version.h"
 #include "lsmkv/dbformat.h"
+#include "utils/log.h"
 
 namespace LSMKV {
+
+  static inline uint64_t DDecode(const Slice &key) {
+      auto b = DecodeFixed64(key.data());
+      return std::byteswap(b);
+  }
+
+  static inline Status
+  Scan(std::map<std::string, std::string> *key_map, Iterator *iter,
+       SequenceNumber seq) {
+      std::string last_key;
+      if (iter->valid()) {
+          do {
+              auto key = iter->key();
+              auto key_seq = ExtractSequenceNumber(key);
+              if (key_seq <= seq) {
+                  key_map->emplace(ExtractUserKey(key), iter->value());
+                  last_key = ExtractUserKey(key);
+
+                  iter->next();
+                  break;
+              }
+
+              iter->next();
+          } while (iter->valid());
+
+          while (iter->valid()) {
+              Slice table_key = iter->key();
+              auto key_seq = ExtractSequenceNumber(table_key);
+
+              if (key_seq <= seq && ExtractUserKey(table_key) != last_key) {
+
+                  key_map->emplace(ExtractUserKey(table_key), iter->value());
+
+
+                  last_key = ExtractUserKey(table_key);
+              }
+
+              iter->next();
+          }
+      }
+      return Status::OK();
+  }
+
   class LevelCache {
-      typedef Table::TableIterator TableIterator;
   public:
       LevelCache(const LevelCache &) = delete;
 
@@ -48,7 +91,14 @@ namespace LSMKV {
 
       void reset();
 
-      void scan(const Slice &K1, const Slice &K2, std::map<std::string, std::string> &key_map);
+      struct scan_cmp {
+          bool operator()(const std::string &a, const std::string &b) const {
+              return LSMKV::StrComparator::compare_impl(LSMKV::ExtractUserKey(a), LSMKV::ExtractUserKey(b));
+          }
+      };
+
+
+      void scan(const Slice &K1, const Slice &K2, std::map<std::string, std::string> *key_map);
 
       Status get(const QueryKey &key, VLogEntryInfo *val);
 
@@ -67,12 +117,11 @@ namespace LSMKV {
 
       Status GetOffset(const Slice &key, uint64_t &offset);
 
-      void AddFile(int level, uint64_t file, uint64_t file_size,
-                   const InternalKey &smallest, const InternalKey &largest);
+      void AddFile(SSTFileMeta *file);
 
   private:
       const std::string db_name_;
-      std::shared_mutex * rwlock_;
+      std::shared_mutex *rwlock_;
 
       Comparator *const cmp_;
       VLogReader vlog_reader_;

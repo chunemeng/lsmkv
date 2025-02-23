@@ -25,6 +25,8 @@ namespace LSMKV {
 
       static constexpr int kBlockTrailerSize = 2;
 
+      static constexpr int kMaxVLogSize = 128 * 1024 * 1024;
+
       static constexpr bool allow_concurrent_immtable_write = false;
 
       static constexpr int block_size = 4096;

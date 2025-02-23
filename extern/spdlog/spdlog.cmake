@@ -10,4 +10,7 @@ FetchContent_Declare(
         INACTIVITY_TIMEOUT 5
         TIMEOUT 30
 )
+
 FetchContent_MakeAvailable(spdlog)
+
+include_directories(${spdlog_SOURCE_DIR}/include)

@@ -161,21 +161,19 @@ namespace LSMKV {
           ::close(fd_);
       }
 
-      bool Read(uint64_t offset, size_t n, Slice *result,
-                char *scratch) const {
+      Status Read(uint64_t offset, size_t n, Slice *result,
+                  char *scratch) const {
           int fd = fd_;
           fd = ::open(filename_.c_str(), O_RDONLY | kOpenBaseFlags);
           if (fd < 0) {
-              std::cerr << "Error opening file " << ":" << std::strerror(errno) << std::endl;
-
-              return false;
+              return Status::IOError("Error opening file " + filename_ + ":" + std::strerror(errno));
           }
 
-          bool status = true;
+          Status status = Status::OK();
           ssize_t read_size = ::pread64(fd, scratch, n, (offset));
           *result = Slice(scratch, (read_size < 0) ? 0 : read_size);
           if (read_size < 0) {
-              status = false;
+              status = Status::IOError("Error reading file " + filename_ + ":" + std::strerror(errno));
           }
           assert(fd != fd_);
           ::close(fd);

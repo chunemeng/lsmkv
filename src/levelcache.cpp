@@ -7,7 +7,6 @@ namespace LSMKV {
           std::move(db_path)), cmp_(new InternalKeyComparator()), vlog_reader_(db_name_),
                                                                                        sst_reader_(db_name_),
                                                                                        rwlock_(rwlock) {
-      cache.reserve(16);
       cache.resize(8);
 //      for (int i = 0; i < 8; ++i) {
 //          cache.emplace_back();
@@ -149,7 +148,6 @@ namespace LSMKV {
       size_t loser_[0];
   };
 
-
   void LevelCache::Merge(uint64_t file_no,
                          uint64_t level,
                          uint64_t timestamp,
@@ -163,23 +161,62 @@ namespace LSMKV {
       cache.clear();
   }
 
+  struct UserKeyComparator : public ComparatorImpl<UserKeyComparator> {
+      static int compare_impl(const Slice &a, const Slice &b) {
+          return StrComparator::compare_impl(ExtractUserKey(a), ExtractUserKey(b));
+      }
 
-  void LevelCache::scan(const Slice &K1, const Slice &K2, std::map<std::string, std::string> &key_map) {
-//      auto it = key_map.begin();
-//      TableIterator *table;
-//      std::shared_lock lock(*rwlock_);
-//      for (const auto &level: cache) {
-//          for (auto &table_pair: std::ranges::reverse_view(level)) {
-//              table = table_pair.second;
-//              table->seek(K1, K2);
-//              while (table->hasNext()) {
-//                  // First insert the key with larger timestamp_
-//                  // if meet the same key, emplace will fail
-//                  key_map.emplace(table->key(), std::string{table->value().data(), table->value().size()});
-//                  table->next();
-//              }
-//          }
-//      }
+      static void find_shortest_separator_impl(std::string *start, const Slice &limit) {
+          assert(false);
+          return;
+      }
+
+      static void find_short_successor_impl(std::string *key) {
+          assert(false);
+          return;
+      }
+
+      static const char *name_impl() {
+          return "UserKeyComparator";
+      }
+  };
+
+  void LevelCache::scan(const Slice &K1, const Slice &K2, std::map<std::string, std::string> *key_map) {
+      std::shared_lock lock(*rwlock_);
+      // TODO: add binary search in each level
+      const auto seq = ExtractSequenceNumber(K1);
+
+      UserKeyComparator user_cmp;
+
+      {
+          const auto &level0 = cache[0];
+
+          // in level0, the bigger file_number_ means the key with higher timestamp
+          for (const auto &it: std::ranges::reverse_view(level0)) {
+              const auto &meta = it.second;
+              auto table = meta.NewIterator(db_name_, &user_cmp);
+              table->seek(K1, K2);
+              Scan(key_map, table, seq);
+              delete table;
+          }
+      }
+
+      // in other levels, the smaller file_number_ means the key with higher timestamp
+      // cause of the compaction, after compaction,
+      // (the key with higher timestamp) 's file_number_ <= (the key with lower timestamp) 's file_number_
+      for (auto i = 1; i < cache.size(); ++i) {
+          assert(false);
+          const auto &level = cache[i];
+          for (const auto &it: std::ranges::reverse_view(level)) {
+              const auto &meta = it.second;
+              auto table = meta.NewIterator(db_name_, &user_cmp);
+              table->seek(K1, K2);
+
+              Scan(key_map, table, seq);
+
+              delete table;
+          }
+      }
   }
 
   uint64_t BinarySearchSST(const char *start, Slice key, uint64_t size) {
@@ -267,20 +304,12 @@ namespace LSMKV {
       return Status::NotFound();
   }
 
-  void LevelCache::AddFile(int level, uint64_t file, uint64_t file_size, const InternalKey &smallest,
-                           const InternalKey &largest) {
-      SSTFileMeta f{};
-      f.file_number_ = file;
-      f.file_size_ = file_size;
-      f.level_ = level;
-      f.smallest = smallest;
-      f.largest = largest;
-
-      if (level >= cache.size()) {
+  void LevelCache::AddFile(SSTFileMeta *f) {
+      if (f->level_ >= cache.size()) {
           cache.emplace_back();
       }
 
-      cache[level].emplace(f.file_number_, f);
+      cache[f->level_].emplace(f->file_number_, std::move(*f));
   }
 
   template<typename function>

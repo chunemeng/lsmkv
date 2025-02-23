@@ -32,7 +32,7 @@ namespace LSMKV {
 
       ~MemTableIterator() override = default;
 
-      [[nodiscard]] bool hasNext() const override { return _iter.hasNext(); }
+      [[nodiscard]] bool valid() const override { return _iter.hasNext(); }
 
       void seek(const Slice &k) override { _iter.seek(k); }
 
