@@ -2,7 +2,6 @@
 #include <string>
 #include <cassert>
 #include <random>
-#include <csignal>
 
 #include "test.h"
 

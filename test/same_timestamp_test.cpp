@@ -13,7 +13,7 @@ namespace LSMKV {
   public:
       SameTimeStampTest() : store("/home/data", "/home/data/vlog") { store.reset(); }
 
-      ~SameTimeStampTest() override {}
+      ~SameTimeStampTest() override = default;
 
       void Build() {
           std::string key{"abcdefg"};

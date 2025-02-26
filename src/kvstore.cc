@@ -1,11 +1,15 @@
 #include "kvstore.h"
-#include "include/builder.h"
+
 #include <memory>
 #include <string>
 #include <utility>
 #include "utils/log.h"
+#include "include/builder.h"
+
 
 #define MB (1024 * 1024)
+
+using Status = KVStoreAPI::Status;
 
 LSMKV::Status KVStoreAPI::Open(const std::string &dir, const std::string &vlog,
                                KVStoreAPI **ptr) {
@@ -33,12 +37,11 @@ LSMKV::Status KVStoreAPI::Open(const std::string &dir, const std::string &vlog,
 KVStore::KVStore(const std::string &dir, const std::string &vlog)
         : db_info(dir, vlog), mem_(std::make_shared<LSMKV::MemTable>()), imm_(nullptr), vlog_reader_(dir) {
     version_ = new LSMKV::Version(DBName());
-    vlog_ = new LSMKV::VLogBuilder(DBName());
+    vlog_ = std::make_unique<LSMKV::VLogBuilder>(DBName(), version_->executor_);
     auto vlog_no = version_->NewVLogFileNumber();
     vlog_->Open(vlog_no);
-    version_->SetVLogFileNumber(1 + vlog_no);
-    kc = new LSMKV::LevelCache(dir, version_, &compaction_lock_);
-    cache = new LSMKV::Cache();
+    kc = std::make_unique<LSMKV::LevelCache>(dir, version_, &compaction_lock_);
+    kc->AddLevel0VlogFile(vlog_no);
 }
 
 KVStore::~KVStore() {
@@ -47,25 +50,8 @@ KVStore::~KVStore() {
 
     delete version_;
     delete cache;
-    delete kc;
 }
 
-void KVStore::putWhenGc(key_t key, const LSMKV::Slice &s) {
-//    if (mem->memoryUsage() >= MEM_MAX_SIZE) {
-//        if (future_.has_value()) {
-//            future_->get();
-//            future_ = std::nullopt;
-//            imm = nullptr;
-//            delete builder_->it_;
-//        }
-//        writeLevel0Table(mem.get());
-//        mem_ = std::make_unique<LSMKV::MemTable>();
-//    }
-
-//    mem_->put(version_->NewSequence(), LSMKV::kTypeValue, key, s);
-}
-
-using Status = KVStoreAPI::Status;
 
 void KVStore::MaybeScheduleCompaction() {
     if (background_compaction_scheduled_) {
@@ -102,16 +88,23 @@ void KVStore::BackgroundCompaction() {
 
     if (auto imm = imm_.load(std::memory_order_acquire); imm != nullptr) {
         CompactMemTable(std::move(imm));
-        return;
     }
 
     // Compact SST files
 
-    if (version_->NumLevelFiles(0) >= LSMKV::Option::kL0_CompactionTrigger) {
-        // Compact level 0
+    if (kc->NumLevelFiles(0) < LSMKV::Option::kL0_CompactionTrigger && !triger_sst_compaction_) {
+        return;
     }
 
+    Status s = Status::OK();
 
+    s = CompactSSTFile(0, true);
+
+    if (!s.ok()) {
+        RecordBackgroundError(s.ToString());
+        background_compaction_scheduled_.store(false, std::memory_order_release);
+        background_compaction_scheduled_.notify_one();
+    }
 }
 
 void KVStore::CompactMemTable(std::shared_ptr<LSMKV::MemTable> &&imm) {
@@ -119,35 +112,15 @@ void KVStore::CompactMemTable(std::shared_ptr<LSMKV::MemTable> &&imm) {
         return;
     }
 
-    // though there is only one thread to write compact imm,
-    // but we still need to hold imm_ to prevent the failure of the following code
-
-    // Save the contents of the memtable as a new Table
-//    VersionEdit edit;
-//    LSMKV::Version *base = version_;
     Status s = WriteLevel0Table(std::move(imm));
 
     if (s.ok() && shutting_down_.load(std::memory_order_acquire)) {
         s = Status::IOError(LSMKV::log::current_info("Deleting DB during memtable compaction"));
     }
 
-    // Replace immutable memtable with the generated Table
-//    if (s.ok()) {
-//        edit.SetPrevLogNumber(0);
-//        edit.SetLogNumber(logfile_number_);  // Earlier logs no longer needed
-//        s = versions_->LogAndApply(&edit, &mutex_);
-//    }
 
     if (s.ok()) {
-        // TODO: APPLY THE EDIT TO VERSION
-//        s = version_->LogAndApply(nullptr);
-    }
-
-    if (s.ok()) {
-        // Commit to the new state
         imm_.store(nullptr, std::memory_order_release);
-        // TODO: replace below with a remove trigger
-//        RemoveObsoleteFiles();
     } else {
         RecordBackgroundError(s.ToString());
 
@@ -155,6 +128,33 @@ void KVStore::CompactMemTable(std::shared_ptr<LSMKV::MemTable> &&imm) {
         background_compaction_scheduled_.notify_one();
     }
 }
+
+Status KVStore::CompactSSTFile(uint32_t level, bool may_trigger_next_compaction) {
+    std::unique_ptr<LSMKV::CompactInfo> compact_info = std::make_unique<LSMKV::CompactInfo>();
+
+    compact_info->level = level;
+
+    auto status = kc->PickCompaction(compact_info.get());
+
+    if (!status.ok()) {
+        return status;
+    }
+
+    if (compact_info->old_files.empty()) {
+        return status;
+    }
+
+    status = kc->DoCompactionWork(compact_info.get());
+
+    if (!status.ok()) {
+        return status;
+    }
+
+    return status;
+
+//    return CompactSSTFile(level + 1, may_trigger_next_compaction);
+}
+
 
 Status KVStore::Prepare() {
     bool allow_delay = true;
@@ -211,36 +211,37 @@ Status KVStore::WriteImpl(LSMKV::Slice key, LSMKV::Slice val, LSMKV::ValueType t
     LSMKV::VLogEntryInfo info{};
 
     LSMKV::SequenceNumber seq = (last_seq << 8) | type;
-    if (type == LSMKV::kTypeDeletion) {
-        s = mem_->put(seq, key, {});
-    } else {
-        if (vlog_->Full(val.size())) {
-            s = vlog_->Close();
 
-            auto vlog_no = version_->NewVLogFileNumber();
+    if (vlog_->Full(val.size())) {
+        s = vlog_->Close();
 
-            if (s.ok()) {
-                vlog_->Open(vlog_no);
-            }
-
-            if (!s.ok()) {
-                return s;
-            }
-
-            version_->SetVLogFileNumber(vlog_no + 1);
-        }
-
-
-        s = vlog_->Append(seq, key, val, &info);
+        auto vlog_no = version_->NewVLogFileNumber();
 
         if (s.ok()) {
+            vlog_->Open(vlog_no);
+        }
+
+        if (!s.ok()) {
+            version_->ReuseVLogFileNumber(vlog_no);
+            return s;
+        }
+
+        kc->AddLevel0VlogFile(vlog_no);
+    }
+
+    s = vlog_->Append(seq, key, val, &info);
+
+    if (s.ok()) {
+        if (type == LSMKV::kTypeDeletion) {
+            s = mem_->put(seq, key, {});
+        } else {
             LSMKV::Slice info_slice(reinterpret_cast<char *>(&info), sizeof(info));
             s = mem_->put(seq, key, info_slice);
         }
-    }
 
-    if (s.ok()) {
-        version_->SetLastSequence(last_seq + 1);
+        if (s.ok()) {
+            version_->SetLastSequence(last_seq + 1);
+        }
     }
 
     rwlock_.unlock();
@@ -302,7 +303,7 @@ std::string KVStore::get(LSMKV::Slice key) {
     return "";
 }
 
-Status KVStore::del(key_t key) {
+Status KVStore::del(LSMKV::Slice key) {
     std::string val;
     Status status = Status::OK();
 
@@ -345,12 +346,13 @@ void KVStore::reset() {
 
     version_->reset();
 
-    auto vlog_no = version_->NewVLogFileNumber();
     vlog_->reset();
+    auto vlog_no = version_->NewVLogFileNumber();
+
     vlog_->Open(vlog_no);
 
-    version_->SetVLogFileNumber(vlog_no + 1);
     kc->reset();
+    kc->AddLevel0VlogFile(vlog_no);
     mem_ = std::make_shared<LSMKV::MemTable>();
 }
 
@@ -359,7 +361,7 @@ void KVStore::reset() {
  * keys in the list should be in an ascending order.
  * An empty string indicates not found.
  */
-Status KVStore::scan(key_t key1, key_t key2,
+Status KVStore::scan(LSMKV::Slice key1, LSMKV::Slice key2,
                      std::list<std::pair<std::string, std::string>> &list) {
     auto seq = version_->LastSequence();
     LSMKV::QueryKey query_key1{seq, key1};
@@ -421,130 +423,13 @@ Status KVStore::scan(key_t key1, key_t key2,
     return status;
 }
 
-Status KVStore::GetOffset(key_t key, LSMKV::VLogEntryInfo *offset) {
-    std::shared_lock lock(rwlock_);
-    Status s;
-//    auto t = mem_->get(version_->LastSequence(), key, *offset);
-//    if (!mem_->contains(key)) {
-//        return kc->GetOffset(key, offset).ok();
-//    }
-//    return false;
-}
-
 /**
  * This reclaims space from vLog by moving valid value and discarding invalid
  * value. chunk_size is the _size in byte you should AT LEAST recycle.
  */
 void KVStore::gc(uint64_t chunk_size) {
-    assert(false && "not implemented");
-//    // should stop the world
-//    // must lock rwlock_ before compaction_lock_
-//    std::unique_lock lock(rwlock_);
-//    std::unique_lock compaction_lock(compaction_lock_);
-//
-//
-//    cache->Drop();
-//    LSMKV::RandomReadableFile *files;
-//    LSMKV::NewRandomReadableFile(VLogPath(), &files);
-//    std::unique_ptr<LSMKV::RandomReadableFile> file(files);
-//
-//    // TODO NOT OVERFLOW
-//    LSMKV::Slice result, value;
-//    auto size = version_->head - version_->tail;
-//    if (chunk_size > size) {
-//        chunk_size = size;
-//    }
-//
-//    int factor = chunk_size * 2 < chunk_size ? 1 : 2;
-//    uint64_t current_size = 0;
-//    uint64_t vlen = 0;
-//    uint64_t offset = 0;
-//    uint32_t len;
-//    LSMKV::Slice key;
-//    char *ptr;
-//    uint64_t _chunk_size = chunk_size * factor;
-//    std::string value_buf;
-//    std::unique_ptr<char[]> tmp;
-//    tmp = std::make_unique<char[]>(_chunk_size);
-//
-//    // I FORGET TO WRITE COMMENT!
-//    // NOW I DON'T KNOW HOW I DO THIS
-//    while (current_size < chunk_size) {
-//        // value_buf is the start of ceil piece of value
-//        if (!value_buf.empty()) {
-//            tmp = std::make_unique<char[]>(vlen);
-//            file->Read(version_->tail + _chunk_size, vlen, &result, tmp.get());
-//            if (result.size() < vlen) {
-//                break;
-//            }
-//        } else {
-//            // READ A _CHUNK_SIZE(ALWAYS TWICE THAN _CHUNK_SIZE)
-//            file->Read(version_->tail, _chunk_size, &result, tmp.get());
-//            _chunk_size = result.size();
-//            if (current_size != 0) {
-//                break;
-//            }
-//            if (_chunk_size == 0) {
-//                break;
-//            }
-//        }
-//        while (current_size < chunk_size) {
-//            if (!value_buf.empty()) {
-//                // APPEND THE NEXT PART OF CEIL PIECE
-//                value_buf.append(tmp.get(), vlen);
-//                ptr = &value_buf[0];
-//                len = value_buf.size() - 15;
-//                assert(len == LSMKV::DecodeFixed64(ptr + 3));
-//                // TODO: variable length key
-//                key = {&value_buf[3], 8};
-//            } else {
-//                // CURRENT PTR IN TMP
-//                ptr = current_size + tmp.get();
-//
-//                // TODO: WHEN FACTOR == 1 , COULDN'T READ THE LEN
-//                // THE LEN OF VALUE
-//                len = LSMKV::DecodeFixed32(ptr + 11);
-//                // THE KEY OF VALUE
-//                // TODO: variable length key
-//                key = {ptr + 3, 8};
-//
-//                // CANT FETCH ALL BYTES IN _CHUNK_SIZE
-//                if (len + current_size + 15 > _chunk_size) {
-//                    // vlen is the remaining part length
-//                    vlen = len + current_size + 15 - _chunk_size;
-//                    // STORE THE FIRST PART OF CEIL PIECE
-//                    value_buf.append(ptr, len + 15 - vlen);
-//                    break;
-//                }
-//            }
-//            // DO CRC CHECK AND CHECK WHERE IT IS THE NEWEST VALUE
-//            if (CheckCrc(ptr, len + 15) && GetOffset(key, offset) &&
-//                (offset == version_->tail + current_size)) {
-//                value = LSMKV::Slice(ptr + 15, len);
-//                putWhenGc(key, value);
-//            }
-//            current_size += len + 15;
-//        }
-//    }
-//    assert(current_size <= INT64_MAX);
-//    assert(version_->tail <= INT64_MAX);
-//    assert(current_size < INT64_MAX);
-//    assert(version_->tail < INT64_MAX);
-//    file = nullptr;
-//    if (current_size != 0) {
-//        int st = utils::de_alloc_file(VLogPath(), version_->tail, current_size);
-//        assert(st == 0);
-//    }
-//
-//    version_->tail += current_size;
-//    if (mem_->memoryUsage() != 0) {
-//
-//
-//        genBuilder();
-//        cache->Drop();
-//
-//        future_ = scheduler_.submit(builder_->create_operator());
-//    }
+    assert(false);
+    return;
 }
 
 Status KVStore::WriteLevel0Table(std::shared_ptr<LSMKV::MemTable> &&imm) {
@@ -565,7 +450,6 @@ Status KVStore::WriteLevel0Table(std::shared_ptr<LSMKV::MemTable> &&imm) {
 
     // Note that if file_size is zero, the file has been deleted and
     // should not be added to the manifest.
-    int level = 0;
     if (s.ok() && meta.file_size_ > 0) {
         version_->SetSSTFileNumber(meta.file_number_ + 1);
 
@@ -574,7 +458,7 @@ Status KVStore::WriteLevel0Table(std::shared_ptr<LSMKV::MemTable> &&imm) {
 //        if (base != nullptr) {
 //            level = base->PickLevelForMemTableOutput(min_user_key, max_user_key);
 //        }
-        kc->AddFile(&meta);
+        kc->AddFile(0, &meta);
     }
 
 //    CompactionStats stats;
@@ -589,68 +473,26 @@ void KVStore::RecordBackgroundError(LSMKV::Slice s) {
         LSMKV::log::error("Background error: {}", s);
 
         // FIXME: thread wait in condition, but the condition is still not notified
+
+        background_compaction_scheduled_.store(false, std::memory_order_release);
+        background_compaction_scheduled_.notify_one();
     }
 }
 
-void KVStore::RemoveObsoleteFiles() {
-    if (bg_catch_error_) {
-        return;
+uint64_t KVStore::ApproximateVLogFileSize() const {
+    uint64_t size = 0;
+    auto f_no = version_->last_vlog_file_no_.load(std::memory_order_acquire);
+
+    for (auto i = f_no; i > 0; i--) {
+        auto fname = LSMKV::VLogFileName(DBName(), i);
+
+        if (LSMKV::FileExists(fname)) {
+            auto res = LSMKV::GetFileSize(fname);
+            if (res > 0) {
+                size += res;
+            }
+        }
     }
 
-//    // Make a set of all of the live files
-//    std::set<uint64_t> live = pending_outputs_;
-//    versions_->AddLiveFiles(&live);
-//
-//    std::vector<std::string> filenames;
-//    env_->GetChildren(dbname_, &filenames);  // Ignoring errors on purpose
-//    uint64_t number;
-//    FileType type;
-//    std::vector<std::string> files_to_delete;
-//    for (std::string &filename: filenames) {
-//        if (ParseFileName(filename, &number, &type)) {
-//            bool keep = true;
-//            switch (type) {
-//                case kLogFile:
-//                    keep = ((number >= versions_->LogNumber()) ||
-//                            (number == versions_->PrevLogNumber()));
-//                    break;
-//                case kDescriptorFile:
-//                    // Keep my manifest file, and any newer incarnations'
-//                    // (in case there is a race that allows other incarnations)
-//                    keep = (number >= versions_->ManifestFileNumber());
-//                    break;
-//                case kTableFile:
-//                    keep = (live.find(number) != live.end());
-//                    break;
-//                case kTempFile:
-//                    // Any temp files that are currently being written to must
-//                    // be recorded in pending_outputs_, which is inserted into "live"
-//                    keep = (live.find(number) != live.end());
-//                    break;
-//                case kCurrentFile:
-//                case kDBLockFile:
-//                case kInfoLogFile:
-//                    keep = true;
-//                    break;
-//            }
-//
-//            if (!keep) {
-//                files_to_delete.push_back(std::move(filename));
-//                if (type == kTableFile) {
-//                    table_cache_->Evict(number);
-//                }
-//                Log(options_.info_log, "Delete type=%d #%lld\n", static_cast<int>(type),
-//                    static_cast<unsigned long long>(number));
-//            }
-//        }
-//    }
-//
-//    // While deleting all files unblock other threads. All files being deleted
-//    // have unique names which will not collide with newly created files and
-//    // are therefore safe to delete while allowing other threads to proceed.
-//    mutex_.Unlock();
-//    for (const std::string &filename: files_to_delete) {
-//        env_->RemoveFile(dbname_ + "/" + filename);
-//    }
-//    mutex_.Lock();
+    return size;
 }

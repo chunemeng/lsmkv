@@ -29,12 +29,12 @@ namespace LSMKV {
                   const uint32_t delta = (h >> 17) | (h << 15);
                   for (int k = 0; k < 2; k++) {
                       const uint32_t bitpos = h % filter_size;
-                      array[bitpos / 8] |= (1 << (bitpos % 8));
+                      array[bitpos / 8] |= static_cast<char>(1 << (bitpos % 8));
                       h += delta;
                   }
               } else {
                   const uint32_t bitpos = h % filter_size;
-                  array[bitpos / 8] |= (1 << (bitpos % 8));
+                  array[bitpos / 8] |= static_cast<char>(1 << (bitpos % 8));
               }
           }
       }
@@ -58,7 +58,7 @@ namespace LSMKV {
               const uint32_t delta = (h >> 17) | (h << 15);
               for (int k = 0; k < 2; k++) {
                   const uint32_t bitpos = h % filter_size;
-                  array[bitpos / 8] |= (1 << (bitpos % 8));
+                  array[bitpos / 8] |= static_cast<char>(1 << (bitpos % 8));
                   h += delta;
               }
           }
@@ -75,12 +75,12 @@ namespace LSMKV {
                   const uint32_t delta = (h >> 17) | (h << 15);
                   for (int k = 0; k < 2; k++) {
                       const uint32_t bitpos = h % filter_size;
-                      dst[bitpos / 8] |= (1 << (bitpos % 8));
+                      dst[bitpos / 8] |= static_cast<char>(1 << (bitpos % 8));
                       h += delta;
                   }
               } else {
                   const uint32_t bitpos = h % filter_size;
-                  dst[bitpos / 8] |= (1 << (bitpos % 8));
+                  dst[bitpos / 8] |= static_cast<char>(1 << (bitpos % 8));
               }
           }
       }

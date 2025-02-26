@@ -25,10 +25,11 @@ private:
     LSMKV::Version *version_;
 
     LSMKV::DB_Info db_info;
-    LSMKV::LevelCache *kc;
-    LSMKV::Cache *cache;
 
-    LSMKV::VLogBuilder *vlog_;
+    std::unique_ptr<LSMKV::LevelCache> kc;
+    LSMKV::Cache *cache{};
+
+    std::unique_ptr<LSMKV::VLogBuilder> vlog_;
 
     static constexpr int MEM_MAX_SIZE = LSMKV::Option::mem_max_size_;
 
@@ -48,11 +49,9 @@ private:
 
     std::atomic<bool> shutting_down_{false};
 
+    bool triger_sst_compaction_ = false;
+
     LSMKV::VLogReader vlog_reader_;
-
-    void putWhenGc(key_t key, const LSMKV::Slice &s);
-
-    Status GetOffset(key_t key, LSMKV::VLogEntryInfo *offset);
 
     Status WriteLevel0Table(std::shared_ptr<LSMKV::MemTable> &&imm);
 
@@ -74,17 +73,14 @@ private:
 
     void CompactMemTable(std::shared_ptr<LSMKV::MemTable> &&imm);
 
-    void CompactSSTable(uint64_t level, uint64_t file_no, uint64_t size);
-
-    void RemoveObsoleteFiles();
+    Status CompactSSTFile(uint32_t level, bool may_trigger_next_compaction);
 
     void MaybeScheduleCompaction();
-
-    Status ReadFromVLog();
 
     Status GetImpl(LSMKV::Slice key, std::string *val);
 
     Status WriteImpl(LSMKV::Slice key, LSMKV::Slice val, LSMKV::ValueType type);
+
 public:
     KVStore(const std::string &dir, const std::string &vlog);
 
@@ -98,9 +94,11 @@ public:
 
     std::string get(LSMKV::Slice key) override;
 
-    Status del(key_t key) override;
+    Status del(LSMKV::Slice key) override;
 
-    Status scan(key_t start, key_t end, std::list<std::pair<std::string, std::string>> &result) override;
+    Status scan(LSMKV::Slice start, LSMKV::Slice end, std::list<std::pair<std::string, std::string>> &result) override;
+
+    uint64_t ApproximateVLogFileSize() const override;
 
     void reset() override;
 

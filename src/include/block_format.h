@@ -1,15 +1,26 @@
 #pragma once
 
+#include "crc32c/crc32c.h"
 #include "lsmkv/dbformat.h"
 #include "utils/iterator.h"
 #include "utils/filename.h"
 #include "utils/file.h"
 #include "utils/bloomfilter.h"
 #include "utils/utils.h"
+#include "utils/executor.h"
 
 
 namespace LSMKV {
-  class TableIterator;
+  template<typename T>
+  static inline T Max(const T &a, const T &b, Comparator *cmp) {
+      return cmp->compare(a, b) > 0 ? a : b;
+  }
+
+  template<typename T>
+  static inline T Min(const T &a, const T &b, Comparator *cmp) {
+      return cmp->compare(a, b) < 0 ? a : b;
+  }
+
 
   struct SSTFileMeta {
       bool InRange(const QueryKey &ikey) const {
@@ -17,6 +28,11 @@ namespace LSMKV {
 
           return StrComparator::compare_impl(user_key, largest.user_key()) <= 0 &&
                  StrComparator::compare_impl(user_key, smallest.user_key()) >= 0;
+      }
+
+      bool InRange(const InternalKey &small, const InternalKey &large, Comparator *cmp) const {
+          return cmp->compare(Max(smallest.Encode(), small.Encode(), cmp),
+                              Min(largest.Encode(), large.Encode(), cmp)) <= 0;
       }
 
       bool IsValid() const {
@@ -27,22 +43,22 @@ namespace LSMKV {
 
       SSTFileMeta() = default;
 
-      SSTFileMeta(SSTFileMeta &&other) {
+      SSTFileMeta(SSTFileMeta &&other) noexcept {
           if (this != &other) {
               file_size_ = other.file_size_;
               file_number_ = other.file_number_;
-              level_ = other.level_;
+              num_entrys_ = other.num_entrys_;
               smallest = std::move(other.smallest);
               largest = std::move(other.largest);
               other.file_size_ = 0;
           }
       }
 
-      SSTFileMeta &operator=(SSTFileMeta &&other) {
+      SSTFileMeta &operator=(SSTFileMeta &&other) noexcept {
           if (this != &other) {
               file_size_ = other.file_size_;
               file_number_ = other.file_number_;
-              level_ = other.level_;
+              num_entrys_ = other.num_entrys_;
               smallest = std::move(other.smallest);
               largest = std::move(other.largest);
               other.file_size_ = 0;
@@ -52,10 +68,17 @@ namespace LSMKV {
 
       uint64_t file_size_{};
       uint64_t file_number_{};
-      uint32_t level_{};
+      uint32_t num_entrys_{};
 
       InternalKey smallest{};
       InternalKey largest{};
+  };
+
+  struct VLogFileMeta {
+      uint32_t level_{};
+      uint32_t file_number_{};
+      SequenceNumber last_sequence_{};
+      bool is_overlapping_{};
   };
 
 
@@ -89,15 +112,15 @@ namespace LSMKV {
       auto sz = block->size();
       auto p = block->data();
       auto key_size = DecodeFixed32(p);
-      auto value_size = DecodeFixed8(p + 4);
 
-      if (sz < key_size + value_size + 5) {
+
+      auto value_size = DecodeFixed32(p + 4);
+      if (sz < key_size + value_size + 8) {
           return Status::Corruption("bad block entry");
       }
+      *key = {block->data(), key_size + value_size + 8};
 
-      *key = {block->data(), key_size + value_size + 5};
-
-      block->remove_prefix(key_size + value_size + 5);
+      block->remove_prefix(key_size + value_size + 8);
 
       return Status::OK();
   }
@@ -211,14 +234,14 @@ namespace LSMKV {
                   return;
               }
 
-              if (block_entry.empty() || block_entry.size() < 5) {
+              if (block_entry.empty() || block_entry.size() < 8) {
                   SetInValid();
                   return;
               }
 
               uint32_t key_size = DecodeFixed32(block_entry.data());
 
-              if (userkey_cmp_->compare(target, Slice(block_entry.data() + 5, key_size)) <= 0) {
+              if (userkey_cmp_->compare(target, Slice(block_entry.data() + 8, key_size)) <= 0) {
                   cur_ = block_entry.data() - block_buffer_.data();
                   end_ = block_buffer_.size();
                   return;
@@ -254,14 +277,14 @@ namespace LSMKV {
                   return;
               }
 
-              if (block_entry.empty() || block_entry.size() < 5) {
+              if (block_entry.empty() || block_entry.size() < 8) {
                   SetInValid();
                   return;
               }
 
               uint32_t key_size = DecodeFixed32(block_entry.data());
 
-              if (userkey_cmp_->compare(K1, Slice(block_entry.data() + 5, key_size)) <= 0) {
+              if (userkey_cmp_->compare(K1, Slice(block_entry.data() + 8, key_size)) <= 0) {
                   cur_ = block_entry.data() - block_buffer_.data();
                   break;
               }
@@ -283,14 +306,14 @@ namespace LSMKV {
                   return;
               }
 
-              if (block_entry.empty() || block_entry.size() < 5) {
+              if (block_entry.empty() || block_entry.size() < 8) {
                   SetInValid();
                   return;
               }
 
               uint32_t key_size = DecodeFixed32(block_entry.data());
 
-              if (userkey_cmp_->compare(K2, Slice(block_entry.data() + 5, key_size)) < 0) {
+              if (userkey_cmp_->compare(K2, Slice(block_entry.data() + 8, key_size)) < 0) {
                   end_ = block_entry.data() - block_buffer_.data();
                   return;
               }
@@ -299,12 +322,12 @@ namespace LSMKV {
       }
 
       Slice key() const override {
-          return {block_buffer_.data() + cur_ + 5, DecodeFixed32(block_buffer_.data() + cur_)};
+          return {block_buffer_.data() + cur_ + 8, DecodeFixed32(block_buffer_.data() + cur_)};
       }
 
       Slice value() const override {
-          return {block_buffer_.data() + cur_ + 5 + DecodeFixed32(block_buffer_.data() + cur_),
-                  DecodeFixed8(block_buffer_.data() + cur_ + 4)};
+          return {block_buffer_.data() + cur_ + 8 + DecodeFixed32(block_buffer_.data() + cur_),
+                  DecodeFixed32(block_buffer_.data() + cur_ + 4)};
       }
 
   private:
@@ -344,9 +367,12 @@ namespace LSMKV {
           dst.append(metaindex_handle_.Encode());
           dst.append(index_handle_.Encode());
 
-          dst.append(8, '\0');
-          EncodeFixed32(dst.data() + 2 * sizeof(BlockEntryInfo), kTableMagicNumber & 0xfffffffu);
-          EncodeFixed32(dst.data() + 2 * sizeof(BlockEntryInfo) + 4, kTableMagicNumber >> 32);
+          dst.append(kEncodedLength - sizeof(BlockEntryInfo) * 2, '\0');
+
+          auto buf = dst.data() + 2 * sizeof(BlockEntryInfo);
+
+          EncodeFixed32(buf, kTableMagicNumber & 0xfffffffu);
+          EncodeFixed32(buf + 4, kTableMagicNumber >> 32);
 
           return dst;
       }
@@ -361,6 +387,7 @@ namespace LSMKV {
 
           if (status.ok()) {
               input.remove_prefix(sizeof(BlockEntryInfo));
+
               uint32_t magic_lo = DecodeFixed32(input.data());
 
               if (magic_lo != (kTableMagicNumber & 0xfffffffu)) {
@@ -402,7 +429,6 @@ namespace LSMKV {
 
       ~VLogEntryInfo() = default;
 
-
       Status Decode(Slice src) {
           if (src.size() != sizeof(VLogEntryInfo)) {
               return Status::Corruption("bad vlog entry info");
@@ -414,6 +440,11 @@ namespace LSMKV {
       [[nodiscard]] std::string Encode() const {
           return {reinterpret_cast<const char *>(this), sizeof(VLogEntryInfo)};
       }
+
+      Slice ToSlice() const {
+          return {reinterpret_cast<const char *>(this), sizeof(VLogEntryInfo)};
+      }
+
 
       // put file_no_ after offset_ make it a pod
       // to avoid 4 bytes padding
@@ -429,9 +460,15 @@ namespace LSMKV {
   class VLogReader {
   private:
       Status InitFile(uint32_t file_no) {
+          if (file_no == file_no_ && file_ != nullptr) {
+              return Status::OK();
+          }
+
           std::string fname = VLogFileName(db_name_, file_no);
+          file_no_ = file_no;
           auto status = NewRandomReadableFile(fname, &file_);
           if (!status.ok()) {
+              file_.reset();
               return status;
           }
 
@@ -441,31 +478,14 @@ namespace LSMKV {
   public:
       explicit VLogReader(const std::string &db_name)
               : db_name_(db_name) {
+          tmp.reserve(4096);
       }
 
       void Reset() {
-          delete file_;
           file_ = nullptr;
       }
 
-      ~VLogReader() {
-          delete file_;
-      }
-
-//      template<template<typename> class Container,
-//              template<typename> class Ret>
-//      Status ReadBatch(const Container<VLogEntryInfo> &infos, Ret<std::string> *values) {
-//          for (const auto &info: infos) {
-//              std::string value;
-//              auto status = Read(info, value);
-//              if (!status.ok()) {
-//                  return status;
-//              }
-//              values->push_back(value);
-//          }
-//          return Status::OK();
-//      }
-
+      ~VLogReader() = default;
 
       Status Read(const VLogEntryInfo &info, std::string *value) {
           auto status = InitFile(info.file_no_);
@@ -473,50 +493,42 @@ namespace LSMKV {
               return status;
           }
 
-          std::string tmp;
-          tmp.resize(info.length_);
+          tmp.resize(info.length_ + Option::kBlockTrailerSize);
 
           Slice result_slice;
           char *buf = tmp.data();
 
-          status = file_->Read(info.offset_, info.length_, &result_slice, buf);
+          status = file_->Read(info.offset_, info.length_ + Option::kBlockTrailerSize, &result_slice, buf);
 
           if (!status.ok()) {
               return status;
           }
 
+          uint32_t key_size = DecodeFixed32(buf);
+          uint32_t value_size = DecodeFixed32(buf + 4);
 
-          if (buf[0] != '\377' || buf[1] != '\377') {
-              return Status::Corruption("bad magic number");
-          }
-          uint32_t magic = DecodeFixed32(buf + 2);
+          assert(key_size + value_size + 8 == info.length_);
 
-          if (magic != 0xa8fa88d7) {
-              return Status::Corruption("bad magic number");
-          }
+          auto crc32 = DecodeFixed32(buf + 8 + key_size + value_size);
+          auto crc = crc32c::Crc32c(buf, key_size + value_size + 8);
 
-          uint16_t crc = DecodeFixed16(buf + 6);
-
-          uint32_t key_size = DecodeFixed32(buf + 8);
-          uint32_t value_size = DecodeFixed32(buf + 12);
-
-          if (crc != utils::crc16(buf + 8, info.length_ - 8)) {
-              return Status::Corruption("crc error");
+          if (crc32 != crc) {
+              return Status::Corruption("bad crc");
           }
 
-          uint64_t seq = DecodeFixed64(buf + 16);
-
-          value->clear();
-          value->append(buf + 24 + key_size, value_size);
+          *value = {buf + key_size + 8, value_size};
 
           return Status::OK();
       }
 
 
   private:
-      RandomReadableFile *file_{nullptr};
+      std::string tmp;
+      std::unique_ptr<RandomReadableFile> file_{nullptr};
+      uint32_t file_no_{};
       const std::string db_name_;
   };
+
 
   // must call seek(or seekFirst) before use
   class TableIterator : public Iterator {
@@ -575,7 +587,7 @@ namespace LSMKV {
 
       TableIterator &operator=(const TableIterator &) = delete;
 
-      ~TableIterator() = default;
+      ~TableIterator() override = default;
 
       bool valid() const override {
           return index_iter_.valid() || block_iter_.valid();
@@ -583,7 +595,15 @@ namespace LSMKV {
 
       void seekToFirst() override {
           index_iter_.seekToFirst();
-          block_iter_.reset();
+          if (!index_iter_.valid()) {
+              return;
+          }
+
+          NextBlock();
+
+          if (index_iter_.valid()) {
+              index_iter_.next();
+          }
       }
 
       void seek(const Slice &target) override {
@@ -601,16 +621,23 @@ namespace LSMKV {
 
       void next() override {
           assert(valid());
-          if (!block_iter_.valid()) {
-              index_iter_.next();
-              block_iter_.reset();
-              if (!index_iter_.valid()) {
-                  return;
-              }
-              NextBlock();
-          } else {
+
+          if (block_iter_.valid()) {
               block_iter_.next();
           }
+
+          if (block_iter_.valid() || !index_iter_.valid()) {
+              return;
+          }
+
+
+          block_iter_.reset();
+          NextBlock();
+
+          if (index_iter_.valid()) {
+              index_iter_.next();
+          }
+
       }
 
       void seek(const Slice &K1,
@@ -715,8 +742,8 @@ namespace LSMKV {
       }
 
       Status ReadOne(const SSTFileMeta *meta, Slice internal_key, VLogEntryInfo *vlog_info) {
-          RandomReadableFile *file;
-          Status status = NewRandomReadableFile(SSTFileName(db_name_, meta->file_number_), &file);
+          SequentialFile *file;
+          Status status = NewSequentialFile(SSTFileName(db_name_, meta->file_number_), &file);
           if (!status.ok()) {
               return status;
           }
@@ -727,7 +754,11 @@ namespace LSMKV {
           std::string buffer;
           buffer.resize(Footer::kEncodedLength);
 
-          file->Read(meta->file_size_ - Footer::kEncodedLength, Footer::kEncodedLength, &input, buffer.data());
+          if (!file->MoveTo(meta->file_size_ - Footer::kEncodedLength)) {
+              return Status::IOError("move to footer failed");
+          }
+
+          file->Read(Footer::kEncodedLength, &input, buffer.data());
 
           status = footer.Decode(input);
 
@@ -739,7 +770,11 @@ namespace LSMKV {
           const auto &index_handle = footer.index_handle();
 
           buffer.resize(metaindex_handle.size_);
-          file->Read(metaindex_handle.offset_, metaindex_handle.size_, &input, buffer.data());
+
+          if (!file->MoveTo(metaindex_handle.offset_)) {
+              return Status::IOError("move to metaindex block failed");
+          }
+          file->Read(metaindex_handle.size_, &input, buffer.data());
           if (!status.ok()) {
               return status;
           }
@@ -749,7 +784,10 @@ namespace LSMKV {
 
           buffer.resize(index_handle.size_);
 
-          file->Read(index_handle.offset_, index_handle.size_, &input, buffer.data());
+          if (!file->MoveTo(index_handle.offset_)) {
+              return Status::IOError("move to index block failed");
+          }
+          file->Read(index_handle.size_, &input, buffer.data());
 
           if (!status.ok()) {
               return status;
@@ -757,8 +795,8 @@ namespace LSMKV {
 
           std::optional<BlockEntryInfo> block_entry_info = std::nullopt;
 
-          Comparator *cmp = new InternalKeyComparator();
-          Comparator *user_cmp = new StrComparator();
+          std::unique_ptr<Comparator> cmp = std::make_unique<InternalKeyComparator>();
+          std::unique_ptr<Comparator> user_cmp = std::make_unique<StrComparator>();
 
           while (!input.empty()) {
               Slice block_entry;
@@ -768,14 +806,14 @@ namespace LSMKV {
                   return status;
               }
 
-              if (block_entry.empty() || block_entry.size() < 4) {
+              if (block_entry.empty() || block_entry.size() < 8) {
                   return Status::Corruption("bad block entry");
               }
 
               uint32_t key_size = DecodeFixed32(block_entry.data());
 
-              if (cmp->compare(internal_key, Slice(block_entry.data() + 5, key_size)) <= 0) {
-                  block_entry.remove_prefix(key_size + 5);
+              if (cmp->compare(internal_key, Slice(block_entry.data() + 8, key_size)) <= 0) {
+                  block_entry.remove_prefix(key_size + 8);
                   BlockEntryInfo b_info{};
                   status = b_info.Decode(block_entry);
                   if (!status.ok()) {
@@ -793,7 +831,12 @@ namespace LSMKV {
           auto b_info = block_entry_info.value();
 
           buffer.resize(b_info.size_);
-          file->Read(b_info.offset_, b_info.size_, &input, buffer.data());
+
+          if (!file->MoveTo(b_info.offset_)) {
+              return Status::IOError("move to block failed");
+          }
+
+          file->Read(b_info.size_, &input, buffer.data());
 
           if (!status.ok()) {
               return status;
@@ -807,13 +850,13 @@ namespace LSMKV {
                   return status;
               }
 
-              if (block_entry.empty() || block_entry.size() < 4) {
+              if (block_entry.empty() || block_entry.size() < 8) {
                   return Status::Corruption("bad block entry");
               }
 
               uint32_t key_size = DecodeFixed32(block_entry.data());
 
-              auto block_internal_key = Slice(block_entry.data() + 5, key_size);
+              auto block_internal_key = Slice(block_entry.data() + 8, key_size);
 
               auto ret = user_cmp->compare(ExtractUserKey(internal_key), ExtractUserKey(block_internal_key));
 
@@ -824,10 +867,14 @@ namespace LSMKV {
               if (ret == 0) {
                   auto seq = ExtractSequenceNumber(block_internal_key);
                   auto query_seq = ExtractSequenceNumber(internal_key);
+                  auto value_type = ExtractValueType(block_internal_key);
 
                   if (seq <= query_seq) {
-                      block_entry.remove_prefix(key_size + 5);
-                      status = vlog_info->Decode(block_entry);
+                      block_entry.remove_prefix(key_size + 8);
+                      if (value_type == kTypeValue) {
+                          status = vlog_info->Decode(block_entry);
+                      }
+
                       return status;
                   }
 

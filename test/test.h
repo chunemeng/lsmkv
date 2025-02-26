@@ -113,7 +113,7 @@ protected:
 
     std::unique_ptr<KVStoreAPI> store;
 
-    bool verbose;
+    bool verbose = false;
 };
 
 const std::string Test::not_found = "";

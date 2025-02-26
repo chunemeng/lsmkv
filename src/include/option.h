@@ -17,17 +17,15 @@ namespace LSMKV {
 
       static constexpr int bloom_size_ = 8192;
 
-      static constexpr int k_vlog_header_size_ = 15;
-
       static constexpr int mem_max_size_ = sst_file_size_ - bloom_size_ - sst_footer_size_;
 
       static constexpr int kL0_CompactionTrigger = 4;
 
-      static constexpr int kBlockTrailerSize = 2;
+      static constexpr int kCompactionVLogLevel = 2;
+
+      static constexpr int kBlockTrailerSize = 4;
 
       static constexpr int kMaxVLogSize = 128 * 1024 * 1024;
-
-      static constexpr bool allow_concurrent_immtable_write = false;
 
       static constexpr int block_size = 4096;
 

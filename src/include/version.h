@@ -6,7 +6,6 @@
 #include "utils/file.h"
 #include "utils/filename.h"
 #include "utils/utils.h"
-#include "queue.hpp"
 #include "utils/executor.h"
 #include <cstdint>
 #include <functional>
@@ -44,38 +43,10 @@ namespace LSMKV {
 
   struct Version {
       explicit Version(const std::string &dbname) : filename(VersionFileName(dbname)) {
-          // read from current file
-          auto vlog_files = std::move(VLogFileName(dbname, 0));
-          if (FileExists(vlog_files)) {
-              head = GetFileSize(vlog_files);
-              tail = utils::offset_tail(vlog_files, head);
-          } else {
-              head = 0;
-              tail = 0;
-          }
-
-          if (FileExists(filename)) {
-              RandomReadableFile *file;
-              NewRandomReadableFile(filename, &file);
-              Slice slice;
-              char buf[40];
-              file->Read(0, 40, &slice, buf);
-              if (slice.size() == 40) {
-                  fileno_ = DecodeFixed64(buf);
-                  timestamp_ = DecodeFixed64(buf + 8);
-                  max_level = DecodeFixed64(buf + 32);
-              }
-              delete file;
-          } else {
-              WriteToFile(this);
-          }
           EmplaceStatus();
       }
 
-      ~Version() {
-          // write into current file
-          WriteToFile(this);
-      }
+      ~Version() = default;
 
       static inline void WriteToFile(const Version *v) {
           WritableNoBufFile *file;
@@ -83,9 +54,6 @@ namespace LSMKV {
 
           char buf[40];
           EncodeFixed64(buf, v->fileno_);
-          EncodeFixed64(buf + 8, v->timestamp_);
-          EncodeFixed64(buf + 16, v->head);
-          EncodeFixed64(buf + 24, v->tail);
           EncodeFixed64(buf + 32, v->max_level);
           file->WriteUnbuffered(buf, 40);
           delete file;
@@ -104,9 +72,6 @@ namespace LSMKV {
       void reset() {
           fileno_ = 0;
           last_vlog_file_no_ = 0;
-          timestamp_ = 1;
-          head = 0;
-          tail = 0;
           max_level = 7;
           status.clear();
           WriteToFile(this);
@@ -121,34 +86,6 @@ namespace LSMKV {
           status[level].insert(file_no);
       }
 
-      void ClearLevelStatus(uint64_t level, std::vector<uint64_t> old_files[2]) {
-          std::string dir_name = DBDirName(filename);
-          std::vector<std::future<void>> tasks;
-          WriteSlice s(dir_name.data(), 0);
-          tasks.reserve(old_files[0].size() + old_files[1].size());
-          for (int i = 0; i < 2; ++i) {
-              for (auto &it: old_files[i]) {
-                  status[level + i].erase(it);
-                  Request req = {false, SSTFilePath(dir_name, level + i, it), s};
-
-                  tasks.emplace_back(std::move(SubmitWrite(std::move(req))));
-              }
-          }
-          for (auto &fu: tasks) {
-              fu.get();
-          }
-      }
-
-      void RemoveFile(const std::string &file_name) {
-
-      }
-
-      std::future<void> SubmitWrite(Request &&req) {
-          return write_scheduler_.submit([reqs = std::move(req)]() {
-              WriteSchedule(reqs);
-          });
-      }
-
       // they are moved
       void MoveLevelStatus(uint64_t level, std::vector<uint64_t> &old_files) {
           for (auto &it: old_files) {
@@ -159,10 +96,6 @@ namespace LSMKV {
 
       uint32_t NumLevelFiles(uint32_t level) const {
           return status[level].size();
-      }
-
-      uint32_t MaxLevelFiles(uint32_t level) const {
-          return level == 0 ? Option::kL0_CompactionTrigger : 1 << (level + 1);
       }
 
       bool LevelOver(uint64_t level) {
@@ -207,11 +140,11 @@ namespace LSMKV {
       }
 
       uint64_t NewVLogFileNumber() {
-          return last_vlog_file_no_;
+          return last_vlog_file_no_.fetch_add(1);
       }
 
       uint64_t NewSSTFileNumber() {
-          return fileno_++;
+          return fileno_;
       }
 
       uint64_t ReuseSSTFileNumber(uint64_t file_no) {
@@ -239,19 +172,19 @@ namespace LSMKV {
           last_sequence_ = seq;
       }
 
-      uint64_t LastSequence() {
+      uint64_t LastSequence() const {
           return last_sequence_;
       }
 
-      Executor write_scheduler_;
       std::string filename;
       uint64_t fileno_ = 0;
-      uint64_t timestamp_ = 1;
-      uint64_t head = 0;
-      uint64_t tail = 0;
+
       uint64_t max_level = 7;
       uint64_t last_sequence_ = 0;
-      uint64_t last_vlog_file_no_ = 0;
+      std::atomic<uint64_t> last_vlog_file_no_ = 0;
+
+      std::shared_ptr<Executor> executor_ = std::make_shared<Executor>(2);
+
       std::vector<std::set<uint64_t>> status;
   };
 }

@@ -1,11 +1,10 @@
-#include <utility>
-#include <mutex>
-#include <shared_mutex>
-
 #include "memtable.h"
+
+#include <mutex>
+
 #include "utils/coding.h"
 #include "lsmkv/dbformat.h"
-#include "format.h"
+#include "block_format.h"
 
 namespace LSMKV {
 
@@ -118,13 +117,12 @@ namespace LSMKV {
       // format: key_size | key | seq_type | value
 
       EncodeFixed32(buf, key.size() + 8);
-      memcpy(buf + 4, key.data(), key.size());
+
+      utils::m_memcpy(buf + 4, key.data(), key.size());
       EncodeFixed64(buf + 4 + key.size(), seq);
       EncodeFixed8(buf + 4 + key.size() + 8, static_cast<uint8_t>(vsz));
 
-      if (vsz > 0) {
-          memcpy(buf + 12 + key.size() + 1, value.data(), vsz);
-      }
+      utils::m_memcpy(buf + 12 + key.size() + 1, value.data(), vsz);
 
       size.fetch_add(sz, std::memory_order_release);
 

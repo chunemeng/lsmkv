@@ -1,8 +1,39 @@
 #include "include/builder.h"
 
 namespace LSMKV {
-  void TableBuilder::Add(const Slice &key, const Slice &value) {
 
+  void TableBuilder::Add(const Slice &key, const Slice &value, VLogEntryInfo *info) {
+      assert(!closed_);
+
+      if (!OK()) return;
+
+      if (need_next_index_entry_) {
+          index_block_.Add(last_key_, DataBlockEntryInfo());
+          need_next_index_entry_ = false;
+      }
+
+      last_key_ = key;
+
+      if (filter_block_ != nullptr) {
+          filter_block_->AddKey(ExtractUserKey(key));
+      }
+
+      num_entries_++;
+
+      info->offset_ = offset_ + data_block_.BlockSize();
+
+      info->length_ = value.size() + key.size() + 8;
+
+      data_block_.Add(key, value);
+
+      const size_t block_size = data_block_.BlockSize();
+      if (block_size >= Option::block_size) {
+          Flush();
+      }
+  }
+
+
+  void TableBuilder::Add(const Slice &key, const Slice &value) {
       assert(!closed_);
 
       if (!OK()) return;
@@ -27,22 +58,21 @@ namespace LSMKV {
       }
   }
 
-  void TableBuilder::Flush() {
+
+  void TableBuilder::Flush(bool next_index_entry) {
       if (!OK()) return;
 
       if (filter_block_ != nullptr) {
           filter_block_->Flush();
       }
 
-
       if (data_block_.Empty()) return;
 
       WriteBlock(&data_block_, &data_block_entry_);
       if (OK()) {
-          need_next_index_entry_ = true;
+          need_next_index_entry_ = next_index_entry;
           status_ = file_->Flush();
       }
-
   }
 
   Status TableBuilder::Finish() {

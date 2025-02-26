@@ -9,23 +9,16 @@
 #include <unordered_set>
 #include <shared_mutex>
 
-#include "format.h"
+#include "block_format.h"
 #include "utils/utils.h"
 #include "utils/status.h"
 #include "utils/rwlock.h"
 #include "memtable.h"
-#include "table.h"
 #include "version.h"
 #include "lsmkv/dbformat.h"
 #include "utils/log.h"
 
 namespace LSMKV {
-
-  static inline uint64_t DDecode(const Slice &key) {
-      auto b = DecodeFixed64(key.data());
-      return std::byteswap(b);
-  }
-
   static inline Status
   Scan(std::map<std::string, std::string> *key_map, Iterator *iter,
        SequenceNumber seq) {
@@ -63,7 +56,32 @@ namespace LSMKV {
       return Status::OK();
   }
 
+  struct CompactInfo {
+      uint64_t level;
+      std::vector<SSTFileMeta *> old_files;
+      std::vector<SSTFileMeta *> overlap_files;
+
+      const InternalKey *smallest_key;
+
+      const InternalKey *largest_key;
+  };
+
+
   class LevelCache {
+  private:
+      uint32_t PickSSTFileNum(uint32_t level) const {
+          if (level == 0) {
+              return cache[0].size();
+          }
+          auto num = static_cast<uint32_t>(std::pow(10, level));
+
+          return cache[level].size() < num ? 0 : num - cache[level].size() + 2;
+      }
+
+      Status
+      BuildWhenCompaction(std::vector<std::unique_ptr<Iterator>> *wait_to_merge, std::vector<SSTFileMeta> *new_files,
+                          bool build_vlog);
+
   public:
       LevelCache(const LevelCache &) = delete;
 
@@ -71,53 +89,51 @@ namespace LSMKV {
 
       explicit LevelCache(std::string db_path, Version *v, std::shared_mutex *rwlock);
 
-      // return timestamp_ to update the version
-      uint64_t CompactionSST(uint64_t level,
-                             uint64_t file_no,
-                             uint64_t size,
-                             std::vector<uint64_t> old_file_nos[2],
-                             std::vector<uint64_t> &need_to_move,
-                             std::vector<WriteSlice> &need_to_write);
-
-      template<typename function>
-      void FindCompactionNextLevel(uint64_t level, function const &callback);
-
-      void Merge(uint64_t file_no,
-                 uint64_t level,
-                 uint64_t timestamp,
-                 bool isDrop,
-                 std::vector<std::unique_ptr<TableIterator>> &wait_to_merge,
-                 std::vector<WriteSlice> &need_to_write);
-
       void reset();
-
-      struct scan_cmp {
-          bool operator()(const std::string &a, const std::string &b) const {
-              return LSMKV::StrComparator::compare_impl(LSMKV::ExtractUserKey(a), LSMKV::ExtractUserKey(b));
-          }
-      };
-
 
       void scan(const Slice &K1, const Slice &K2, std::map<std::string, std::string> *key_map);
 
       Status get(const QueryKey &key, VLogEntryInfo *val);
 
-//      std::string get(uint64_t key) {
-//          char char_key[8];
-//          EncodeFixed64(char_key, key);
-//          Slice ke(char_key, 8);
-//          std::string val;
-//          get(ke, val);
-//          return val;
-//      }
+      Status DoCompactionWork(CompactInfo *compact_info);
 
       ~LevelCache();
 
       bool empty() const;
 
-      Status GetOffset(const Slice &key, uint64_t &offset);
+      void AddFile(uint32_t level, SSTFileMeta *file);
 
-      void AddFile(SSTFileMeta *file);
+      void AddFile(uint32_t level, std::vector<SSTFileMeta *> &files);
+
+      void AddFile(uint32_t level, std::vector<SSTFileMeta> &files);
+
+      Status RemoveFile(uint32_t level, uint64_t file_no);
+
+      Status MoveFiles(uint32_t level, const std::vector<SSTFileMeta *> &metas, uint32_t new_level);
+
+      Status RemoveFileAtCompaction(uint32_t level, const std::vector<SSTFileMeta *> &metas);
+
+      Status PickCompaction(CompactInfo *compact_info);
+
+      Status PickOverlappingFiles(CompactInfo *compact_info);
+
+      void AddLevel0VlogFile(uint64_t file_no) {
+          vlog_file_map_[file_no] = 0;
+      }
+
+      bool IsLevel0VlogFile(uint64_t file_no) {
+          auto it = vlog_file_map_.find(file_no);
+          return it != vlog_file_map_.end() && it->second == 0;
+      }
+
+      uint32_t NumLevelFiles(uint32_t level) const {
+          if (level >= cache.size()) {
+              return 0;
+          }
+          return cache[level].size();
+      }
+
+      Status RemoveUnnecessaryVLog();
 
   private:
       const std::string db_name_;
@@ -128,6 +144,12 @@ namespace LSMKV {
       SSTReader sst_reader_;
 
       std::vector<std::map<uint64_t, SSTFileMeta>> cache;
+
+
+      // sst_file_no | vlog_file_no
+      std::unordered_map<uint64_t, uint64_t> vlog_file_map_;
+
+      Version *version_;
   };
 }
 

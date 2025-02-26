@@ -37,7 +37,7 @@ namespace LSMKV {
       }
 
       Status &operator=(Status &&s) noexcept {
-          code_ = std::move(s.code_);
+          code_ = s.code_;
           state_ = std::move(s.state_);
           s.code_ = Code::kOk;
           return *this;

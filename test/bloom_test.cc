@@ -9,8 +9,6 @@
 
 namespace LSMKV {
 
-    static const int kVerbose = 1;
-
     static Slice Key(int i, char *buffer) {
         EncodeFixed32(buffer, i);
         return Slice(buffer, sizeof(uint32_t));

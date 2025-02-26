@@ -7,7 +7,7 @@
 #include <string>
 
 #include "lsmkv/dbformat.h"
-#include "format.h"
+#include "block_format.h"
 #include "option.h"
 #include "skiplist.h"
 #include "utils/arena.h"

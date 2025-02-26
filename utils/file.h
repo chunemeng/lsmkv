@@ -1,12 +1,6 @@
 #ifndef WRITABLEFILE_H
 #define WRITABLEFILE_H
 
-#include <fcntl.h>
-#include "slice.h"
-#include "status.h"
-#include <dirent.h>
-#include <fcntl.h>
-#include <sys/mman.h>
 
 #ifndef __Fuchsia__
 
@@ -14,13 +8,25 @@
 
 #endif
 
+#include <fcntl.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "utils.h"
+#include "slice.h"
+#include "status.h"
+
+
 //#include <liburing.h>
-#include <iostream>
+
+namespace utils {
+  static inline void m_memcpy(void *dst, const void *src, size_t n);
+}
 
 namespace LSMKV {
   constexpr const size_t kWritableFileBufferSize = 65536;
@@ -136,19 +142,28 @@ namespace LSMKV {
       const std::string filename_;
   };
 
-  static inline bool NewSequentialFile(const std::string &filename,
-                                       SequentialFile **result) {
+  static inline Status NewSequentialFile(const std::string &filename,
+                                         SequentialFile **result) {
       int fd = ::open(filename.c_str(), O_RDONLY | kOpenBaseFlags);
       if (fd < 0) {
-          std::cerr << "Error opening file " << filename << ":" << std::strerror(errno) << std::endl;
-
-          *result = nullptr;
-          return false;
+          return Status::IOError("Error opening file " + filename + ":" + std::strerror(errno));
       }
 
       *result = new SequentialFile(filename, fd);
-      return true;
+      return Status::OK();
   }
+
+  static inline Status NewSequentialFile(const std::string &filename,
+                                         std::unique_ptr<SequentialFile> *result) {
+      int fd = ::open(filename.c_str(), O_RDONLY | kOpenBaseFlags);
+      if (fd < 0) {
+          return Status::IOError("Error opening file " + filename + ":" + std::strerror(errno));
+      }
+
+      *result = std::make_unique<SequentialFile>(filename, fd);
+      return Status::OK();
+  }
+
 
   class RandomReadableFile {
   public:
@@ -187,6 +202,14 @@ namespace LSMKV {
 
   class WritableFile {
   private:
+      char buf[kWritableFileBufferSize];
+      size_t pos;
+      int _fd;
+
+      const std::string filename;
+      const std::string dirname;
+
+  private:
       Status FlushBuffer() {
           Status status = WriteUnbuffered(buf, pos);
           pos = 0;
@@ -199,20 +222,6 @@ namespace LSMKV {
           return sync_success ? Status::OK() : Status::IOError(std::strerror(errno));
       }
 
-      char buf[kWritableFileBufferSize];
-      size_t pos;
-      int _fd;
-
-      const std::string filename;
-      const std::string dirname;
-  public:
-      char *WriteToBuffer(size_t size) {
-          if (size > kWritableFileBufferSize - pos) {
-              FlushBuffer();
-          }
-          pos += size;
-          return buf + pos - size;
-      }
 
       bool WriteUnbuffered(const Slice &s) {
           auto size = s.size();
@@ -246,6 +255,15 @@ namespace LSMKV {
           return Status::OK();
       }
 
+  public:
+      char *WriteToBuffer(size_t size) {
+          if (size > kWritableFileBufferSize - pos) {
+              FlushBuffer();
+          }
+          pos += size;
+          return buf + pos - size;
+      }
+
 
       WritableFile(std::string filename, int fd)
               : pos(0),
@@ -269,7 +287,7 @@ namespace LSMKV {
           const char *write_data = data.data();
 
           size_t copy_size = std::min(write_size, kWritableFileBufferSize - pos);
-          std::memcpy(buf + pos, write_data, copy_size);
+          utils::m_memcpy(buf + pos, write_data, copy_size);
           write_data += copy_size;
           write_size -= copy_size;
           pos += copy_size;
@@ -285,7 +303,7 @@ namespace LSMKV {
 
           // Small writes go to buffer, large writes are written directly.
           if (write_size < kWritableFileBufferSize) {
-              std::memcpy(buf, write_data, write_size);
+              utils::m_memcpy(buf, write_data, write_size);
               pos = write_size;
               return Status::OK();
           }
@@ -397,6 +415,18 @@ namespace LSMKV {
       return Status::OK();
   }
 
+  static inline Status
+  NewRandomReadableFile(const std::string &filename, std::unique_ptr<RandomReadableFile> *result) {
+      *result = nullptr;
+      int fd = ::open(filename.c_str(), O_RDONLY | kOpenBaseFlags);
+      if (fd < 0) {
+          return Status::IOError("Error opening file " + filename + ":" + std::strerror(errno));
+      }
+
+      *result = std::make_unique<RandomReadableFile>(filename, fd);
+      return Status::OK();
+  }
+
   static inline off64_t GetFileSize(const std::string &filePath) {
       struct stat64 stat_buf{};
       int rc = stat64(filePath.c_str(), &stat_buf);
@@ -471,6 +501,17 @@ namespace LSMKV {
       return Status::OK();
   }
 
+  static inline Status NewWritableFile(const std::string &filename, std::unique_ptr<WritableFile> *result) {
+      int fd = ::open(filename.c_str(), O_TRUNC | O_WRONLY | O_CREAT | kOpenBaseFlags, 0644);
+      if (fd < 0) {
+          *result = nullptr;
+          return Status::IOError(std::strerror(errno));
+      }
+
+      *result = std::make_unique<WritableFile>(filename, fd);
+      return Status::OK();
+  }
+
   static inline Status NewAppendableFile(const std::string &filename,
                                          WritableFile **result) {
       int fd = ::open(filename.c_str(),
@@ -483,6 +524,21 @@ namespace LSMKV {
       }
 
       *result = new WritableFile(filename, fd);
+      return Status::OK();
+  }
+
+  static inline Status NewAppendableFile(const std::string &filename,
+                                         std::unique_ptr<WritableFile> *result) {
+      int fd = ::open(filename.c_str(),
+                      O_APPEND | O_WRONLY | O_CREAT | kOpenBaseFlags, 0644);
+      if (fd < 0) {
+          std::cerr << "Error opening file " << filename << ":" << std::strerror(errno) << std::endl;
+
+          *result = nullptr;
+          return Status::IOError(std::strerror(errno));
+      }
+
+      *result = std::make_unique<WritableFile>(filename, fd);
       return Status::OK();
   }
 

@@ -6,6 +6,7 @@
 
 #include "utils/slice.h"
 #include "utils/coding.h"
+#include "utils/utils.h"
 
 namespace LSMKV {
   enum ValueType { kTypeDeletion = 0x0, kTypeValue = 0x1 };
@@ -23,7 +24,7 @@ namespace LSMKV {
           rep_.resize(len_);
           char *p = rep_.data();
           EncodeFixed32(p, key.size() + 8);
-          memcpy(p + 4, key.data(), key.size());
+          utils::m_memcpy(p + 4, key.data(), key.size());
 
           // it okays to just put the value type as the 0x0
           EncodeFixed64(p + 4 + key.size(), (seq << 8));
@@ -47,7 +48,7 @@ namespace LSMKV {
 
   static inline ValueType ExtractValueType(const Slice &internal_key) {
       assert(internal_key.size() >= 8);
-      return static_cast<ValueType>(internal_key.data()[internal_key.size() - 8]);
+      return static_cast<ValueType>(DecodeFixed64(internal_key.data() + internal_key.size() - 8) & 0xff);
   }
 
   static inline SequenceNumber ExtractSequenceNumber(const Slice &internal_key) {
@@ -70,7 +71,7 @@ namespace LSMKV {
       void DecodeFrom(const Slice &s) {
           rep_.reset();
           rep_ = std::make_unique<char[]>(s.size());
-          memcpy(rep_.get(), s.data(), s.size());
+          utils::m_memcpy(rep_.get(), s.data(), s.size());
           size_ = s.size();
       }
 
@@ -89,6 +90,8 @@ namespace LSMKV {
 
   private:
       uint32_t size_;
+
+      // same as a key & (seq | type)
       std::unique_ptr<char[]> rep_;
   };
 

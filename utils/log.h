@@ -8,13 +8,39 @@
 
 namespace LSMKV::log {
 
-  static inline spdlog::async_logger logger() {
-      static auto logger = spdlog::async_logger("LSMKV", spdlog::sinks_init_list{
-                                                        std::make_shared<spdlog::sinks::stdout_sink_mt>()},
-                                                std::make_shared<spdlog::details::thread_pool>(8192, 1),
-                                                spdlog::async_overflow_policy::block);
-      return logger;
-  }
+  class LoggerSingleton {
+public:
+    LoggerSingleton(const LoggerSingleton&) = delete;
+    LoggerSingleton& operator=(const LoggerSingleton&) = delete;
+
+    static spdlog::async_logger& instance() {
+        static LoggerSingleton s_instance;
+        return *s_instance.logger_;
+    }
+
+private:
+    LoggerSingleton() {
+        auto thread_pool = std::make_shared<spdlog::details::thread_pool>(8192, 1);
+        auto sink = std::make_shared<spdlog::sinks::stdout_sink_mt>();
+        logger_ = std::make_shared<spdlog::async_logger>(
+            "LSMKV",
+            sink,
+            thread_pool,
+            spdlog::async_overflow_policy::block
+        );
+        spdlog::register_logger(logger_);
+    }
+
+    ~LoggerSingleton() {
+        spdlog::drop("LSMKV");
+    }
+
+    std::shared_ptr<spdlog::async_logger> logger_;
+};
+
+inline spdlog::async_logger& logger() {
+    return LoggerSingleton::instance();
+}
 
   static inline void info(const std::string &msg) {
       logger().info(msg);

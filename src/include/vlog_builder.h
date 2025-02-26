@@ -7,155 +7,109 @@
 #include "utils/executor.h"
 #include "utils/slice.h"
 #include "utils/utils.h"
-#include "format.h"
+#include "block_format.h"
 
 namespace LSMKV {
   class VLogBuilder {
   private:
-      // Header: magic(6) + crc(2) + key_size(4) + value_size(4) + sequence & type (8)
-      static constexpr size_t kHeaderSize = 24;
-
-      static constexpr const char magic = '\377';
+      static std::string EncodeKey(const Slice &key, SequenceNumber seq) {
+          std::string result;
+          result.reserve(key.size() + 8);
+          result.append(key.data(), key.size());
+          result.resize(key.size() + 8);
+          EncodeFixed64(result.data() + key.size(), seq);
+          return result;
+      }
 
   public:
-      explicit VLogBuilder(const std::string &db_name) : db_name_(db_name) {};
+      explicit VLogBuilder(const std::string &db_name, std::shared_ptr<Executor> executor) : db_name_(db_name),
+                                                                                             comparator_(
+                                                                                                     std::make_unique<InternalKeyComparator>()),
+                                                                                             executor_(std::move(
+                                                                                                     executor)) {
+
+      };
+
+      uint32_t file_number() const {
+          return file_no_;
+      }
 
       Status Open(uint32_t file_no) {
           file_no_ = file_no;
-          offset_ = 0;
           auto status = NewAppendableFile(VLogFileName(db_name_, file_no), &file_);
           if (!status.ok()) {
               return status;
           }
+
+          builder_ = std::make_unique<TableBuilder>(file_.get(), comparator_.get(), executor_, false);
+
           return Status::OK();
       }
 
       void reset() {
-          if (file_ != nullptr) {
-              file_->Close();
-              delete file_;
-          }
-          offset_ = 0;
           file_no_ = 0;
-          file_ = nullptr;
+          builder_.reset();
+
+          file_.reset();
       }
 
       Status Close() {
           Status s = Status::OK();
-          if (file_ != nullptr) {
-              s = file_->Flush();
-              s = file_->Close();
-              delete file_;
-              file_ = nullptr;
-          }
-          offset_ = 0;
+          builder_.reset();
+          file_.reset();
           return s;
       }
 
       ~VLogBuilder() {
-          if (file_ != nullptr) {
-              file_->Close();
-              delete file_;
-          }
+          Close();
       }
 
       bool Full(uint32_t value_sz) const {
+          auto offset_ = builder_->ApproximateFileSize();
           return offset_ >= Option::kMaxVLogSize ||
                  (offset_ > Option::kMaxVLogSize / 2 && value_sz > Option::kMaxVLogSize / 2);
       }
 
-      // Header: magic(6) + crc(2) + key_size(4) + value_size(4) + sequence & type (8)
-      Status Append(SequenceNumber seq, const Slice &key, const Slice &value, VLogEntryInfo *info, bool sync = false) {
-          Status s;
+      Status Append(SequenceNumber seq, const Slice &key, const Slice &value, VLogEntryInfo *info, bool sync = true) {
+          std::string internal_key = EncodeKey(key, seq);
+          return Append(internal_key, value, info, sync);
+      }
 
-          // TODO: replace with real size
-          if (value.size() > 30000) {
-              auto size = kHeaderSize + key.size();
-              assert(size < 65536);
-              auto buf = file_->WriteToBuffer(size);
+      Status Append(const Slice &internal_key, const Slice &value, VLogEntryInfo *info, bool sync = true) {
+          builder_->Add(internal_key, value, info);
 
-                buf[0] = magic;
-                buf[1] = magic;
-                EncodeFixed32(buf + 2, 0xa8fa88d7);
-                // leave space for crc(2)
-                EncodeFixed32(buf + 8, key.size());
-                EncodeFixed32(buf + 12, value.size());
-                EncodeFixed64(buf + 16, seq);
-                memcpy(buf + kHeaderSize, key.data(), key.size());
-                auto crc = utils::crc16_with_prefix(buf + 8, size - 8, value.data(), value.size());
-                EncodeFixed16(buf + 6, crc);
-                s = file_->Flush();
+          offset_ += info->length_;
 
-                if (!s.ok()) {
-                    return s;
-                }
+          info->file_no_ = file_no_;
 
-                s = file_->Append(value);
+          if (builder_->OK()) {
+              bool next_index = offset_ > Option::block_size;
 
-                if (!s.ok()) {
-                    return s;
-                }
+              offset_ = next_index ? 0 : offset_;
 
-                s = file_->Flush();
+              builder_->Flush(next_index);
 
-                if (!s.ok()) {
-                    return s;
-                }
-
-                *info = {file_no_, size + value.size(), offset_};
-
-                offset_ += size + value.size();
-          } else {
-
-              auto size = kHeaderSize + value.size() + key.size();
-
-              auto buf = file_->WriteToBuffer(size);
-              buf[0] = magic;
-              buf[1] = magic;
-              EncodeFixed32(buf + 2, 0xa8fa88d7);
-
-              // leave space for crc(2)
-
-              EncodeFixed32(buf + 8, key.size());
-              EncodeFixed32(buf + 12, value.size());
-              EncodeFixed64(buf + 16, seq);
-
-              memcpy(buf + kHeaderSize, key.data(), key.size());
-
-              memcpy(buf + kHeaderSize + key.size(), value.data(), value.size());
-
-              auto crc = utils::crc16(buf + 8, size - 8);
-
-              EncodeFixed16(buf + 6, crc);
-
-              uint64_t offset = offset_;
-
-              offset_ += size;
-
-
-              s = file_->Flush();
-
-              if (!s.ok()) {
-                  return s;
+              if (builder_->OK() && sync && false) {
+                  builder_->Sync();
               }
-
-              *info = {file_no_, size, offset};
           }
 
-
-          return Status::OK();
-
+          return builder_->status();
       }
 
   private:
-      // magic 0xff
-
       uint32_t file_no_ = 0;
 
       uint64_t offset_ = 0;
 
+      std::shared_ptr<Executor> executor_;
+
+      std::unique_ptr<TableBuilder> builder_;
+
+      std::unique_ptr<Comparator> comparator_;
+
       const std::string &db_name_;
-      WritableFile *file_;
+      std::unique_ptr<WritableFile> file_;
   };
 } // namespace LSMKV
 #endif // VLOGBUILDER_H

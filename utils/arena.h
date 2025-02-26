@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <vector>
 #include <cassert>
+#include <mutex>
 
 namespace LSMKV {
 
@@ -20,7 +21,7 @@ namespace LSMKV {
       size_t alloc_bytes_remaining;
       std::vector<char *> pool;
 
-      mutable std::mutex mutex;
+      mutable std::mutex mutex{};
 
       void allocatePtr() {
           alloc_ptr = allocateNewBlock(ARENA_BLOCK_SIZE);

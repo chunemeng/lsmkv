@@ -9,7 +9,7 @@ namespace LSMKV {
       std::string vlog_buf;
 
       if (iter->valid()) {
-          WritableFile *file;
+          std::unique_ptr<WritableFile> file;
 
           auto file_number = v->NewSSTFileNumber();
 
@@ -19,12 +19,13 @@ namespace LSMKV {
           if (!s.ok()) {
               return s;
           }
+
           meta->file_number_ = file_number;
           meta->smallest.DecodeFrom(iter->key());
           {
               Comparator *cmp = new InternalKeyComparator();
 
-              TableBuilder builder{file, cmp};
+              TableBuilder builder{file.get(), cmp, v->executor_};
               Slice key;
               for (; iter->valid(); iter->next()) {
                   key = iter->key();
@@ -56,124 +57,15 @@ namespace LSMKV {
 
           assert(sz == meta->file_size_);
 
-          delete file;
-          file = nullptr;
-
-
-//          RandomReadableFile *files;
-//          NewRandomReadableFile(fname, &files);
-//
-//          Slice input;
-//          std::string buffer;
-//          buffer.resize(Footer::kEncodedLength);
-//
-//          files->Read(meta->file_size_ - Footer::kEncodedLength, Footer::kEncodedLength, &input, buffer.data());
-//          Footer footer{};
-//          s = footer.Decode(input);
-
-//          if (s.ok()) {
-//              // Verify that the table is usable
-//              Iterator* it = table_cache->NewIterator(ReadOptions(), meta->number,
-//                                                      meta->file_size);
-//              s = it->status();
-//              delete it;
-//          }
-//          if (!iter->status().ok()) {
-//              s = iter->status();
-//          }
+          file.reset();
 
           if (s.ok() && meta->file_size_ > 0) {
               // Keep it
               v->SetSSTFileNumber(file_number + 1);
           } else {
-              v->RemoveFile(fname);
           }
           return s;
       }
       return Status::InvalidArgument();
   }
-
-  Status SSTCompaction(uint64_t level, uint64_t file_no, Version *v, LevelCache *kc) {
-
-      Status s = Status::OK();
-      //Need to be rm and earse in version
-      std::vector<uint64_t> old_files[2] = {std::vector<uint64_t>(), std::vector<uint64_t>()};
-
-      if (v->NeedNewLevel(level)) {
-          v->AddNewLevel(1);
-      }
-      auto size = v->NumLevelFiles(level) - v->MaxLevelFiles(level);
-
-      std::vector<uint64_t> need_to_move;
-      std::vector<class WriteSlice> need_to_write;
-
-      uint64_t timestamp = kc->CompactionSST(level, file_no, size,
-                                             old_files,
-                                             need_to_move,
-                                             need_to_write);
-      // move
-      MoveToNewLevel(level, timestamp, need_to_move, v);
-      v->MoveLevelStatus(level, need_to_move);
-      // write
-      WriteSlice(need_to_write, level, v);
-      // update level status
-      v->AddNewLevelStatus(level + 1, v->fileno_ - need_to_write.size(), need_to_write.size());
-      // remove old sst
-      v->ClearLevelStatus(level, old_files);
-
-      // PASS THE COMPACTION
-      if (s.ok() && v->LevelOver(level + 1)) {
-          s = SSTCompaction(level + 1, v->fileno_, v, kc);
-      }
-      return s;
-  }
-
-  bool WriteSlice(std::vector<class WriteSlice> &need_to_write, uint64_t level, Version *v) {
-      auto dbname = v->DBName();
-      std::vector<std::future<void>> tasks;
-      tasks.reserve(need_to_write.size());
-      for (auto &s: need_to_write) {
-          Request req = {true, SSTFilePath(dbname, level + 1, v->fileno_++), s};
-          tasks.emplace_back(std::move(v->SubmitWrite(std::move(req))));
-      }
-      for (auto &fu: tasks) {
-          fu.get();
-      }
-      return true;
-  }
-
-  bool MoveToNewLevel(uint64_t level, const uint64_t &timestamp, std::vector<uint64_t> &new_files, Version *v) {
-      std::string dbname = v->DBName();
-      if (v->NeedNewLevel(level)) {
-          v->AddNewLevel(1);
-      }
-
-      for (auto &it: new_files) {
-          utils::mvfile(SSTFilePath(dbname, level, it), SSTFilePath(dbname, level + 1, it));
-      }
-
-      WritableNoBufFile *file;
-      char buf[8];
-
-      auto level_dir = LevelDirName(dbname, level);
-
-      if (!utils::dirExists(level_dir)) [[unlikely]] {
-          utils::mkdir(level_dir);
-      }
-
-
-      // Change the timestamp_
-      for (auto &it: new_files) {
-          NewWriteAtStartFile(SSTFilePath(level_dir, it), &file);
-          EncodeFixed64(buf, timestamp);
-          file->WriteUnbuffered(Slice(buf, 8));
-          delete file;
-      }
-      return true;
-  }
-
-  uint64_t FindLevels(const std::string &dbname, Version *v) {
-      return 0;
-  }
-
 }// namespace LSMKV

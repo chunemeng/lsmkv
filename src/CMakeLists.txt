@@ -19,3 +19,7 @@ target_link_libraries(LSMKV PRIVATE
 target_link_libraries(LSMKV PRIVATE
         spdlog
 )
+
+target_link_libraries(LSMKV PRIVATE
+        crc32c
+)

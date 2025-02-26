@@ -4,30 +4,32 @@
 #include <functional>
 #include <future>
 #include <thread>
-#include <concurrentqueue.h>
+#include "concurrent_queue.h"
 
 namespace LSMKV {
 
   class Executor {
-
   private:
       void StartSchedule() {
           do {
-              sem_.acquire();
-              if (stop_) [[unlikely]] {
+              count.acquire();
+
+              if (stop_.load(std::memory_order_acquire)) [[unlikely]] {
                   break;
               }
               task req;
-              if (!fallback_queue_.try_dequeue(req)) {
+
+              if (!fallback_queue_.pop(req)) {
                   continue;
               }
+
               req();
           } while (true);
       };
   public:
       using task = std::move_only_function<void()>;
 
-      Executor(int n = 1) {
+      explicit Executor(int n = 1) {
           background_threads_.resize(n);
           for (int i = 0; i < n; i++) {
               background_threads_[i] = std::jthread([this] { StartSchedule(); });
@@ -35,10 +37,11 @@ namespace LSMKV {
       }
 
       ~Executor() {
-          stop_ = true;
-          int N = background_threads_.size();
-          sem_.release(N);
-          for (int i = 0; i < N; i++) {
+          stop_.store(true, std::memory_order_release);
+          auto N = background_threads_.size();
+          count.release(static_cast<long>(N));
+
+          for (auto i = 0; i < N; i++) {
               background_threads_[i].join();
           }
       }
@@ -55,21 +58,19 @@ namespace LSMKV {
                   promise.set_value(f());
               }
           };
-          fallback_queue_.enqueue(std::move(ts));
-          sem_.release();
+          fallback_queue_.push(std::move(ts));
+          count.release();
           return future;
       }
 
 
   private:
       std::atomic<bool> stop_{false};
-      std::counting_semaphore<> sem_{0};
-
-      moodycamel::ConcurrentQueue <task> fallback_queue_;
+      std::counting_semaphore<> count{0};
+      alp::concurrent_queue <task> fallback_queue_;
       /** The background thread responsible for issuing scheduled requests to the disk manager. */
       std::vector<std::jthread> background_threads_;
   };
-
 
 }// namespace LSMKV
 
