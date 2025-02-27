@@ -4,6 +4,11 @@
 #include "lsmkv/dbformat.h"
 
 namespace LSMKV {
+  namespace detail {
+    AnyComparator::AnyComparator(UserDefinedComparator *comparator)
+            : comparator_(comparator) {}
+  } // namespace detail
+
 
 
   int LSMKV::StrComparator::compare_impl(const LSMKV::Slice &a, const LSMKV::Slice &b) {
@@ -55,22 +60,24 @@ namespace LSMKV {
   }
 
   int Comparator::compare(const Slice &a, const Slice &b) const {
-      return std::visit([a, b](auto &&c) { return c.compare_impl(a, b); }, comparator_);
+      return std::visit([a, b](auto &&c) { return c.compare(a, b); }, comparator_);
   }
 
   void Comparator::find_shortest_separator(std::string *start, const Slice &limit) const {
-      std::visit([start, limit](auto &&c) { return c.find_shortest_separator_impl(start, limit); }, comparator_);
+      std::visit([start, limit](auto &&c) { return c.find_shortest_separator(start, limit); }, comparator_);
   }
 
   const char *Comparator::name() const {
-      return std::visit([](auto &&c) { return c.name_impl(); }, comparator_);
+      return std::visit([](auto &&c) { return c.name(); }, comparator_);
   }
 
   void Comparator::find_short_successor(std::string *key) const {
-      std::visit([key](auto &&c) { return c.find_short_successor_impl(key); }, comparator_);
+      std::visit([key](auto &&c) { return c.find_short_successor(key); }, comparator_);
   }
 
   int UserKeyComparator::compare_impl(const Slice &a, const Slice &b) {
       return StrComparator::compare_impl(ExtractUserKey(a), ExtractUserKey(b));
   }
+
+
 } // namespace LSMKV
