@@ -795,8 +795,8 @@ namespace LSMKV {
 
           std::optional<BlockEntryInfo> block_entry_info = std::nullopt;
 
-          std::unique_ptr<Comparator> cmp = std::make_unique<InternalKeyComparator>();
-          std::unique_ptr<Comparator> user_cmp = std::make_unique<StrComparator>();
+          Comparator cmp = InternalKeyComparator();
+          Comparator user_cmp = StrComparator();
 
           while (!input.empty()) {
               Slice block_entry;
@@ -812,7 +812,7 @@ namespace LSMKV {
 
               uint32_t key_size = DecodeFixed32(block_entry.data());
 
-              if (cmp->compare(internal_key, Slice(block_entry.data() + 8, key_size)) <= 0) {
+              if (cmp.compare(internal_key, Slice(block_entry.data() + 8, key_size)) <= 0) {
                   block_entry.remove_prefix(key_size + 8);
                   BlockEntryInfo b_info{};
                   status = b_info.Decode(block_entry);
@@ -858,7 +858,7 @@ namespace LSMKV {
 
               auto block_internal_key = Slice(block_entry.data() + 8, key_size);
 
-              auto ret = user_cmp->compare(ExtractUserKey(internal_key), ExtractUserKey(block_internal_key));
+              auto ret = user_cmp.compare(ExtractUserKey(internal_key), ExtractUserKey(block_internal_key));
 
               if (ret < 0) {
                   return Status::NotFound();

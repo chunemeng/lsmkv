@@ -24,7 +24,7 @@ namespace LSMKV {
   public:
       explicit VLogBuilder(const std::string &db_name, std::shared_ptr<Executor> executor) : db_name_(db_name),
                                                                                              comparator_(
-                                                                                                     std::make_unique<InternalKeyComparator>()),
+                                                                                                     InternalKeyComparator()),
                                                                                              executor_(std::move(
                                                                                                      executor)) {
 
@@ -41,7 +41,7 @@ namespace LSMKV {
               return status;
           }
 
-          builder_ = std::make_unique<TableBuilder>(file_.get(), comparator_.get(), executor_, false);
+          builder_ = std::make_unique<TableBuilder>(file_.get(), &comparator_, executor_, false);
 
           return Status::OK();
       }
@@ -106,7 +106,7 @@ namespace LSMKV {
 
       std::unique_ptr<TableBuilder> builder_;
 
-      std::unique_ptr<Comparator> comparator_;
+      Comparator comparator_;
 
       const std::string &db_name_;
       std::unique_ptr<WritableFile> file_;

@@ -1,8 +1,7 @@
-#include <cstdint>
-#include <iostream>
 #include "utils/comparator.h"
 #include "utils/slice.h"
 #include "utils/coding.h"
+#include "lsmkv/dbformat.h"
 
 namespace LSMKV {
 
@@ -53,5 +52,25 @@ namespace LSMKV {
   Slice InternalKeyComparator::extract_seq_num(const Slice &internal_key) {
       assert(internal_key.size() >= 8);
       return {internal_key.data() + internal_key.size() - 8, 8};
+  }
+
+  int Comparator::compare(const Slice &a, const Slice &b) const {
+      return std::visit([a, b](auto &&c) { return c.compare_impl(a, b); }, comparator_);
+  }
+
+  void Comparator::find_shortest_separator(std::string *start, const Slice &limit) const {
+      std::visit([start, limit](auto &&c) { return c.find_shortest_separator_impl(start, limit); }, comparator_);
+  }
+
+  const char *Comparator::name() const {
+      return std::visit([](auto &&c) { return c.name_impl(); }, comparator_);
+  }
+
+  void Comparator::find_short_successor(std::string *key) const {
+      std::visit([key](auto &&c) { return c.find_short_successor_impl(key); }, comparator_);
+  }
+
+  int UserKeyComparator::compare_impl(const Slice &a, const Slice &b) {
+      return StrComparator::compare_impl(ExtractUserKey(a), ExtractUserKey(b));
   }
 } // namespace LSMKV

@@ -5,16 +5,13 @@
 
 namespace LSMKV {
   LevelCache::LevelCache(std::string db_path, Version *v, std::shared_mutex *rwlock) : db_name_(
-          std::move(db_path)), cmp_(new InternalKeyComparator()), vlog_reader_(db_name_),
+          std::move(db_path)), cmp_(InternalKeyComparator()), vlog_reader_(db_name_),
                                                                                        sst_reader_(db_name_),
                                                                                        rwlock_(rwlock), version_(v) {
       cache.resize(8);
   }
 
-  LevelCache::~LevelCache() {
-      delete cmp_;
-  }
-
+  LevelCache::~LevelCache() = default;
 
   int cmp(Iterator *lhs, Iterator *rhs) {
       // m for max, n for normal
@@ -123,30 +120,12 @@ namespace LSMKV {
       cache.clear();
   }
 
-  struct UserKeyComparator : public ComparatorImpl<UserKeyComparator> {
-      static int compare_impl(const Slice &a, const Slice &b) {
-          return StrComparator::compare_impl(ExtractUserKey(a), ExtractUserKey(b));
-      }
-
-      static void find_shortest_separator_impl(std::string *start, const Slice &limit) {
-          assert(false);
-      }
-
-      static void find_short_successor_impl(std::string *key) {
-          assert(false);
-      }
-
-      static const char *name_impl() {
-          return "UserKeyComparator";
-      }
-  };
-
   void LevelCache::scan(const Slice &K1, const Slice &K2, std::map<std::string, std::string> *key_map) {
       std::shared_lock lock(*rwlock_);
       // TODO: add binary search in each level
       const auto seq = ExtractSequenceNumber(K1);
 
-      UserKeyComparator user_cmp;
+      Comparator cmp = UserKeyComparator();
 
       {
           const auto &level0 = cache[0];
@@ -154,7 +133,7 @@ namespace LSMKV {
           // in level0, the bigger file_number_ means the key with higher timestamp
           for (const auto &it: std::ranges::reverse_view(level0)) {
               const auto &meta = it.second;
-              auto table = meta.NewIterator(db_name_, &user_cmp);
+              auto table = meta.NewIterator(db_name_, &cmp);
               table->seek(K1, K2);
               Scan(key_map, table, seq);
               delete table;
@@ -168,7 +147,7 @@ namespace LSMKV {
           const auto &level = cache[i];
           for (const auto &it: std::ranges::reverse_view(level)) {
               const auto &meta = it.second;
-              auto table = meta.NewIterator(db_name_, &user_cmp);
+              auto table = meta.NewIterator(db_name_, &cmp);
               table->seek(K1, K2);
 
               Scan(key_map, table, seq);
@@ -308,11 +287,11 @@ namespace LSMKV {
               compact_info->smallest_key = &it.second.smallest;
               compact_info->largest_key = &it.second.largest;
           } else {
-              if (cmp_->compare(it.second.smallest.Encode(), compact_info->smallest_key->Encode()) < 0) {
+              if (cmp_.compare(it.second.smallest.Encode(), compact_info->smallest_key->Encode()) < 0) {
                   compact_info->smallest_key = &it.second.smallest;
               }
 
-              if (cmp_->compare(it.second.largest.Encode(), compact_info->largest_key->Encode()) > 0) {
+              if (cmp_.compare(it.second.largest.Encode(), compact_info->largest_key->Encode()) > 0) {
                   compact_info->largest_key = &it.second.largest;
               }
           }
@@ -333,7 +312,7 @@ namespace LSMKV {
       }
 
       auto &level_cache = cache[level];
-      InternalKeyComparator cmp;
+      Comparator cmp = InternalKeyComparator();
 
       for (auto &it: level_cache) {
           if (it.second.InRange(*compact_info->smallest_key, *compact_info->largest_key, &cmp)) {
@@ -361,7 +340,7 @@ namespace LSMKV {
       std::vector<uint32_t> rm_sst_files;
 
       for (auto &f: compact_info->old_files) {
-          std::unique_ptr<Iterator> iter(f->NewIterator(db_name_, cmp_));
+          std::unique_ptr<Iterator> iter(f->NewIterator(db_name_, &cmp_));
           iter->seekToFirst();
           rm_sst_files.emplace_back(f->file_number_);
           if (level > Option::kCompactionVLogLevel) {
@@ -376,7 +355,7 @@ namespace LSMKV {
 
 
       for (auto &f: compact_info->overlap_files) {
-          std::unique_ptr<Iterator> iter(f->NewIterator(db_name_, cmp_));
+          std::unique_ptr<Iterator> iter(f->NewIterator(db_name_, &cmp_));
           iter->seekToFirst();
           rm_sst_files.emplace_back(f->file_number_);
           if (level >= Option::kCompactionVLogLevel) {
@@ -476,7 +455,7 @@ namespace LSMKV {
                                   std::vector<SSTFileMeta> *new_files,
                                   bool build_vlog) {
 
-      LoserTree loser_tree(wait_to_merge->size(), *wait_to_merge, cmp_);
+      LoserTree loser_tree(wait_to_merge->size(), *wait_to_merge, &cmp_);
 
       Status status = Status::OK();
       std::unique_ptr<WritableFile> file;
@@ -518,7 +497,7 @@ namespace LSMKV {
               auto file_number = version_->NewSSTFileNumber();
               auto fname = SSTFileName(db_name_, file_number);
               s = NewWritableFile(fname, &file);
-              builder = std::make_unique<TableBuilder>(file.get(), cmp_, version_->executor_);
+              builder = std::make_unique<TableBuilder>(file.get(), &cmp_, version_->executor_);
 
               if (build_vlog) {
                   auto f_no = version_->NewVLogFileNumber();

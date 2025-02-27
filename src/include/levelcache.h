@@ -139,7 +139,7 @@ namespace LSMKV {
       const std::string db_name_;
       std::shared_mutex *rwlock_;
 
-      Comparator *const cmp_;
+      Comparator cmp_;
       VLogReader vlog_reader_;
       SSTReader sst_reader_;
 

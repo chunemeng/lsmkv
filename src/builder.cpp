@@ -23,9 +23,9 @@ namespace LSMKV {
           meta->file_number_ = file_number;
           meta->smallest.DecodeFrom(iter->key());
           {
-              Comparator *cmp = new InternalKeyComparator();
+              Comparator cmp = InternalKeyComparator();
 
-              TableBuilder builder{file.get(), cmp, v->executor_};
+              TableBuilder builder{file.get(), &cmp, v->executor_};
               Slice key;
               for (; iter->valid(); iter->next()) {
                   key = iter->key();
@@ -41,8 +41,6 @@ namespace LSMKV {
                   meta->file_size_ = builder.FileSize();
                   assert(meta->file_size_ > 0);
               }
-
-              delete cmp;
           }
 
 
