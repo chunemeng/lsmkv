@@ -3,6 +3,7 @@
 #include <string>
 #include <utility>
 #include <memory>
+#include <utils/status.h>
 
 #include "utils/slice.h"
 #include "utils/coding.h"
@@ -60,9 +61,9 @@ namespace LSMKV {
   public:
       InternalKey() = default;
 
-      InternalKey(InternalKey &&) = default;
+      InternalKey(InternalKey &&) noexcept = default;
 
-      InternalKey &operator=(InternalKey &&) = default;
+      InternalKey &operator=(InternalKey &&) noexcept = default;
 
       InternalKey(const InternalKey &) = delete;
 
@@ -73,6 +74,10 @@ namespace LSMKV {
           rep_ = std::make_unique<char[]>(s.size());
           utils::m_memcpy(rep_.get(), s.data(), s.size());
           size_ = s.size();
+      }
+
+      void Decode(const Slice &s) {
+          DecodeFrom(s);
       }
 
       Slice user_key() const { return ExtractUserKey(Encode()); }
@@ -87,6 +92,8 @@ namespace LSMKV {
           assert(size_ != 0);
           return {rep_.get(), size_};
       }
+
+      uint32_t size() const { return size_; }
 
   private:
       uint32_t size_;

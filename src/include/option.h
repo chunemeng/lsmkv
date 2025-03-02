@@ -13,7 +13,7 @@ namespace LSMKV {
 
       static constexpr int sst_footer_size_ = 32;
 
-      static constexpr int sst_file_size_ = 16 * 1024;
+      static constexpr int sst_file_size_ = 2 * 1024 * 1024;
 
       static constexpr int bloom_size_ = 8192;
 
@@ -21,7 +21,7 @@ namespace LSMKV {
 
       static constexpr int kL0_CompactionTrigger = 4;
 
-      static constexpr int kCompactionVLogLevel = 2;
+      static constexpr int kCompactionVLogLevel = 3;
 
       static constexpr int kBlockTrailerSize = 4;
 

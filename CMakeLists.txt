@@ -4,7 +4,6 @@ project(LSMKV)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_BUILD_TYPE Debug)
 
 message(STATUS "C compiler version: ${CMAKE_C_COMPILER_VERSION}")
 message(STATUS "C++ compiler version: ${CMAKE_CXX_COMPILER_VERSION}")
@@ -12,10 +11,11 @@ message(STATUS "C++ compiler version: ${CMAKE_CXX_COMPILER_VERSION}")
 
 OPTION(ENABLE_TEST "Enable test" ON)
 OPTION(ENABLE_BENCHMARK "Enable benchmark" OFF)
-OPTION(ENABLE_DEBUG "Enable debug" ON)
+OPTION(ENABLE_DEBUG "Enable debug" OFF)
+OPTION(ENABLE_DEBUG_INFO "Enable debug info" ON)
 # Sanitizers(enable once at a time)
-OPTION(ENABLE_ASAN "Enable AddressSanitizer" OFF)
-OPTION(ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" ON)
+OPTION(ENABLE_ASAN "Enable AddressSanitizer" ON)
+OPTION(ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 OPTION(ENABLE_TSAN "Enable ThreadSanitizer" OFF)
 
 if (ENABLE_ASAN)
@@ -40,14 +40,17 @@ if (UNIX)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
 endif ()
 
-SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w ")
-
 if (ENABLE_DEBUG)
     message(STATUS "Debug mode enabled")
-    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -O0 -w")
+    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -w")
 else ()
     message(STATUS "Release mode enabled")
     SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -march=native")
+endif ()
+
+if (ENABLE_DEBUG_INFO)
+    message(STATUS "Debug info enabled")
+    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g")
 endif ()
 
 include(extern/liburing/liburing.cmake)

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "coding.h"
-#include "file.h"
 #include <array>
 #include <cstdio>
 #include <cstring>
@@ -349,14 +348,6 @@ namespace utils {
       }
       return crc;
   }
-
-  static inline void m_memcpy(void *__restrict _dest, const void *__restrict _src,
-                              size_t _n) {
-      if (_n > 0)[[likely]] {
-          memcpy(_dest, _src, _n);
-      }
-  }
-
 
   static inline uint16_t crc16_simd(uint16_t crc, const char *data, size_t len) {
       const auto *buf = reinterpret_cast<const uint8_t *>(data);

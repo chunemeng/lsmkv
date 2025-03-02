@@ -16,6 +16,7 @@ namespace LSMKV {
           kInvalidArgument = 4,
           kIOError = 5,
           kBGError = 6,
+          kExpired = 7,
       };
 
   private:
@@ -91,6 +92,10 @@ namespace LSMKV {
           return {Code::kInvalidArgument};
       }
 
+      static Status Expired() noexcept {
+          return {Code::kExpired};
+      }
+
       [[nodiscard]] bool ok() const noexcept {
           return code_ == Code::kOk;
       }
@@ -113,6 +118,18 @@ namespace LSMKV {
 
       [[nodiscard]] bool IsIOError() const noexcept {
           return code_ == Code::kIOError;
+      }
+
+      [[nodiscard]] bool IsBGError() const noexcept {
+          return code_ == Code::kBGError;
+      }
+
+      [[nodiscard]] bool IsExpired() const noexcept {
+          return code_ == Code::kExpired;
+      }
+
+      [[nodiscard]] Code code() const noexcept {
+          return code_;
       }
 
       Slice ToString() const noexcept {

@@ -4,10 +4,13 @@
 #include <shared_mutex>
 
 namespace LSMKV {
-  LevelCache::LevelCache(std::string db_path, Version *v, std::shared_mutex *rwlock) : db_name_(
-          std::move(db_path)), cmp_(InternalKeyComparator()), vlog_reader_(db_name_),
-                                                                                       sst_reader_(db_name_),
-                                                                                       rwlock_(rwlock), version_(v) {
+  LevelCache::LevelCache(std::string db_path, std::shared_ptr<Version> v, std::shared_mutex *rwlock) : db_name_(
+          std::move(db_path)), cmp_(InternalKeyComparator()), vlog_reader_(db_name_), sst_reader_(db_name_),
+                                                                                                       rwlock_(rwlock),
+                                                                                                       version_(
+                                                                                                               std::move(
+                                                                                                                       v)) {
+      NewAppendableFile(VersionFileName(db_name_), &meta_file_);
       cache.resize(8);
   }
 
@@ -120,6 +123,10 @@ namespace LSMKV {
       cache.clear();
   }
 
+  Status LevelCache::gc() {
+      return Status::OK();
+  }
+
   void LevelCache::scan(const Slice &K1, const Slice &K2, std::map<std::string, std::string> *key_map) {
       std::shared_lock lock(*rwlock_);
       // TODO: add binary search in each level
@@ -145,7 +152,7 @@ namespace LSMKV {
       // (the key with higher timestamp) 's file_number_ < = (the key with lower timestamp) 's file_number_
       for (auto i = 1; i < cache.size(); ++i) {
           const auto &level = cache[i];
-          for (const auto &it: std::ranges::reverse_view(level)) {
+          for (const auto &it: level) {
               const auto &meta = it.second;
               auto table = meta.NewIterator(db_name_, &cmp);
               table->seek(K1, K2);
@@ -191,13 +198,17 @@ namespace LSMKV {
 
               if (!tmp.empty()) {
                   s = sst_reader_.ReadBatch(tmp, key.internal_key(), info);
+
+                  if (s.ok()) {
+                      break;
+                  }
               }
           }
 
       }
 
-      if (!s.ok()) {
-          s = Status::NotFound();
+      if (!s.ok() && !s.IsNotFound()) {
+          log::error("get failed: {}", s.ToString());
           return s;
       }
 
@@ -244,6 +255,7 @@ namespace LSMKV {
           if (it == level_cache.end()) {
               return Status::NotFound();
           }
+          it->second.level_ = new_level;
 
           new_level_cache.emplace(meta->file_number_, std::move(it->second));
           level_cache.erase(it);
@@ -330,11 +342,15 @@ namespace LSMKV {
           return Status::Corruption("level out of range");
       }
 
-      if (level < Option::kCompactionVLogLevel && compact_info->overlap_files.empty()) {
+      // >= kCompactionVLogLevel level, we need build vlog
+      // plus because we write to next level, we need to build vlog
+      bool compact_vlog = (level + 1 >= Option::kCompactionVLogLevel);
+
+      if (level != 0 && !compact_vlog && compact_info->overlap_files.empty()) {
           return MoveFiles(level, compact_info->old_files, level + 1);
       }
 
-      bool compact_vlog = level > Option::kCompactionVLogLevel;
+
       std::vector<std::unique_ptr<Iterator>> wait_to_merge;
       std::vector<uint32_t> rm_vlog_files;
       std::vector<uint32_t> rm_sst_files;
@@ -343,11 +359,9 @@ namespace LSMKV {
           std::unique_ptr<Iterator> iter(f->NewIterator(db_name_, &cmp_));
           iter->seekToFirst();
           rm_sst_files.emplace_back(f->file_number_);
-          if (level > Option::kCompactionVLogLevel) {
-              auto vlog_file = vlog_file_map_.find(f->file_number_);
-              assert(vlog_file != vlog_file_map_.end());
-              rm_vlog_files.emplace_back(vlog_file->second);
-              vlog_file_map_.erase(vlog_file);
+          if (level >= Option::kCompactionVLogLevel) {
+              assert(f->vlog_file_no_ != 0);
+              rm_vlog_files.emplace_back(f->vlog_file_no_);
           }
 
           wait_to_merge.emplace_back(std::move(iter));
@@ -358,11 +372,9 @@ namespace LSMKV {
           std::unique_ptr<Iterator> iter(f->NewIterator(db_name_, &cmp_));
           iter->seekToFirst();
           rm_sst_files.emplace_back(f->file_number_);
-          if (level >= Option::kCompactionVLogLevel) {
-              auto vlog_file = vlog_file_map_.find(f->file_number_);
-              assert(vlog_file != vlog_file_map_.end());
-              rm_vlog_files.emplace_back(vlog_file->second);
-              vlog_file_map_.erase(vlog_file);
+          if (compact_vlog) {
+              assert(f->vlog_file_no_ != 0);
+              rm_vlog_files.emplace_back(f->vlog_file_no_);
           }
 
           wait_to_merge.emplace_back(std::move(iter));
@@ -380,7 +392,6 @@ namespace LSMKV {
 
       version_->executor_->submit(
               [db_name = db_name_, sst_files = std::move(rm_sst_files), vlog_files = std::move(rm_vlog_files)]() {
-
                   for (auto &f: sst_files) {
                       auto file_name = SSTFileName(db_name, f);
                       utils::rmfile(file_name);
@@ -395,42 +406,6 @@ namespace LSMKV {
 
       return Status::OK();
 
-  }
-
-  Status LevelCache::RemoveUnnecessaryVLog() {
-      Status s = Status::OK();
-
-      auto vlog_no = version_->NewVLogFileNumber();
-
-      if (vlog_no <= 1) {
-          return s;
-      }
-
-      std::unique_lock lock(*rwlock_);
-      std::vector<uint64_t> vlog_files;
-
-      for (auto i = 0; i < vlog_no - 1; i++) {
-          if (vlog_file_map_.find(i) == vlog_file_map_.end()) {
-              vlog_files.emplace_back(i);
-          }
-      }
-      lock.unlock();
-
-      for (auto &file_no: vlog_files) {
-          auto file_name = VLogFileName(db_name_, file_no);
-          auto res = utils::rmfile(file_name);
-          if (res < 0) {
-              s = Status::IOError(file_name + " :remove vlog file failed");
-              break;
-          }
-      }
-
-      return s;
-  }
-
-  uint64_t DDecode(const Slice &key) {
-      auto b = DecodeFixed64(key.data());
-      return std::byteswap(b);
   }
 
   Status LevelCache::RemoveFile(uint32_t level, uint64_t file_no) {
@@ -464,10 +439,6 @@ namespace LSMKV {
 
       std::unique_ptr<VLogBuilder> vlog_builder;
 
-      if (build_vlog) {
-          vlog_builder = std::make_unique<VLogBuilder>(db_name_, version_->executor_);
-      }
-
       VLogReader vlog_reader(db_name_);
 
       std::string vlog_buf;
@@ -476,7 +447,7 @@ namespace LSMKV {
 
       Slice key;
 
-      while (!loser_tree.end()) {
+      for (; !loser_tree.end(); loser_tree.increment()) {
           auto top = loser_tree.top();
           auto iter = loser_tree.top_iter(top);
           key = iter->key();
@@ -485,6 +456,12 @@ namespace LSMKV {
           if (!meta.has_value()) {
               meta = SSTFileMeta{};
               meta->smallest.DecodeFrom(key);
+          }
+
+
+          auto seq_no = ExtractSequenceNumber(key);
+          if (seq_no < version_->LastLivingSequence()) {
+              continue;
           }
 
           auto value_type = ExtractValueType(key);
@@ -496,10 +473,14 @@ namespace LSMKV {
           if (file == nullptr) {
               auto file_number = version_->NewSSTFileNumber();
               auto fname = SSTFileName(db_name_, file_number);
-              s = NewWritableFile(fname, &file);
+              s = NewUringWritableFile(fname, &file);
               builder = std::make_unique<TableBuilder>(file.get(), &cmp_, version_->executor_);
 
               if (build_vlog) {
+                  if (vlog_builder == nullptr) {
+                      vlog_builder = std::make_unique<VLogBuilder>(db_name_, version_->executor_);
+                  }
+
                   auto f_no = version_->NewVLogFileNumber();
                   s = vlog_builder->Open(f_no);
                   if (!s.ok()) {
@@ -547,89 +528,97 @@ namespace LSMKV {
               auto f_number = version_->NewSSTFileNumber();
               meta->file_number_ = f_number;
               meta->largest.DecodeFrom(key);
+              builder->SetLastKey(key);
               s = builder->Finish();
-              meta->file_size_ = builder->FileSize();
-              if (!s.ok()) {
+
+              if (!s.ok()) [[unlikely]] {
                   return s;
               }
 
+              meta->file_size_ = builder->FileSize();
+
+
               s = file->Sync();
-              if (!s.ok()) {
+              if (!s.ok()) [[unlikely]] {
                   return s;
               }
 
               s = file->Close();
-              if (!s.ok()) {
+              if (!s.ok()) [[unlikely]] {
                   return s;
               }
 
               builder.reset();
               file.reset();
               version_->SetSSTFileNumber(f_number + 1);
-              new_files->emplace_back(std::move(meta.value()));
-              meta.reset();
 
 
               if (build_vlog) {
-                  vlog_file_map_[f_number] = vlog_builder->file_number();
-
+                  meta->vlog_file_no_ = vlog_builder->file_number();
 
                   s = vlog_builder->Close();
 
-                  if (!s.ok()) {
-                      vlog_file_map_.erase(f_number);
+                  if (!s.ok()) [[unlikely]] {
                       return s;
                   }
-
-
-                  vlog_builder->reset();
               }
+
+              new_files->emplace_back(std::move(meta.value()));
+              meta.reset();
           }
 
-          if (!status.ok()) {
+          if (!status.ok()) [[unlikely]] {
               return status;
           }
-
-          loser_tree.increment();
       }
 
-      auto f_number = version_->NewSSTFileNumber();
-      meta->file_number_ = f_number;
-      meta->largest.DecodeFrom(key);
-      Status s = builder->Finish();
-      meta->file_size_ = builder->FileSize();
-      if (!s.ok()) {
-          return s;
-      }
+      if (builder != nullptr) {
+          auto f_number = version_->NewSSTFileNumber();
+          meta->file_number_ = f_number;
+          meta->largest.DecodeFrom(key);
 
-      s = file->Sync();
-      if (!s.ok()) {
-          return s;
-      }
-
-      s = file->Close();
-      if (!s.ok()) {
-          return s;
-      }
-
-      builder.reset();
-      file.reset();
-      version_->SetSSTFileNumber(f_number + 1);
-      new_files->emplace_back(std::move(meta.value()));
-      meta.reset();
-
-      if (build_vlog) {
-          vlog_file_map_[f_number] = vlog_builder->file_number();
-
-          s = vlog_builder->Close();
-
+          builder->SetLastKey(key);
+          Status s = builder->Finish();
+          meta->file_size_ = builder->FileSize();
           if (!s.ok()) {
-              vlog_builder->reset();
               return s;
           }
 
-          vlog_builder.reset();
+          s = file->Sync();
+          if (!s.ok()) [[unlikely]] {
+              return s;
+          }
+
+          s = file->Close();
+          if (!s.ok()) [[unlikely]] {
+              return s;
+          }
+
+          builder.reset();
+          file.reset();
+          version_->SetSSTFileNumber(f_number + 1);
+
+
+          if (build_vlog) {
+              meta->vlog_file_no_ = vlog_builder->file_number();
+
+              s = vlog_builder->Close();
+
+              if (!s.ok()) {
+                  return s;
+              }
+
+              vlog_builder.reset();
+          }
+
+          new_files->emplace_back(std::move(meta.value()));
+          meta.reset();
       }
+
+      if (vlog_builder != nullptr) {
+          assert(vlog_builder->Empty());
+      }
+      wait_to_merge->clear();
 
       return Status::OK();
   }
@@ -642,6 +631,11 @@ namespace LSMKV {
       auto &level_cache = cache[level];
 
       for (auto &f: files) {
+          if (level != 0 && level >= Option::kCompactionVLogLevel) {
+              assert(f.vlog_file_no_ != 0);
+          }
+
+          f.level_ = level;
           level_cache.emplace(f.file_number_, std::move(f));
       }
 

@@ -64,7 +64,7 @@ namespace LSMKV {
       };
 
 
-      bool KeyIsAfterNode(const K &_key, node *n) const {
+      static bool KeyIsAfterNode(const K &_key, node *n) {
           return (n != nullptr) && Cmp::compare(n->_key, _key) < 0;
       }
 
@@ -179,7 +179,7 @@ namespace LSMKV {
           void seek(const Slice &K1, const Slice &K2) {
               _cur = _list->findNode(K1);
               _end = _list->findNode(K2);
-              if (_end != nullptr && _end->_key == K2) _end = _end->next(0);
+              if (_end != nullptr && Cmp::compare_user_key(_end->_key, K2) == 0) _end = _end->next(0);
           }
 
           void seekToFirst() {
@@ -224,7 +224,7 @@ namespace LSMKV {
           }
       }
 
-      bool equal(const K &_key, node *n) const {
+      static bool equal(const K &_key, node *n) {
           return (n != nullptr) && Cmp::compare(n->_key, _key) == 0;
       }
 

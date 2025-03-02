@@ -10,6 +10,7 @@
 #include "db_info.h"
 #include "block_format.h"
 #include "crc32c/crc32c.h"
+#include "file.h"
 
 
 namespace LSMKV {
@@ -119,23 +120,13 @@ namespace LSMKV {
           handle->size_ = raw.size();
           handle->offset_ = offset_;
 
-          std::future<uint32_t> crc_fu;
-          if (executor_) {
-              crc_fu = executor_->submit([raw]() {
-                  return crc32c::Crc32c(raw.data(), raw.size());
-              });
-          }
 
           status_ = file_->Append(raw);
           if (status_.ok()) {
               char trailer[Option::kBlockTrailerSize];
               uint32_t crc{};
 
-              if (executor_) {
-                  crc = crc_fu.get();
-              } else {
-                  crc = crc32c::Crc32c(raw.data(), raw.size());
-              }
+              crc = crc32c::Crc32c(raw.data(), raw.size());
 
               EncodeFixed32(trailer, crc);
               status_ = file_->Append(Slice(trailer, Option::kBlockTrailerSize));
@@ -204,8 +195,13 @@ namespace LSMKV {
           return num_entries_;
       }
 
+
+      void SetLastKey(const Slice &key) {
+          last_key_ = key;
+      }
+
   private:
-      WritableFile *file_;
+      WritableFile *file_{};
 
       bool need_next_index_entry_{false};
 

@@ -1,12 +1,13 @@
 #pragma once
 
-#include "utils/status.h"
 #include <cstdint>
 #include <list>
 #include <string>
 #include "utils/slice.h"
 #include "utils/coding.h"
 #include "utils/utils.h"
+#include "utils/status.h"
+#include "dbformat.h"
 
 class KVStoreAPI {
 public:
@@ -38,6 +39,8 @@ public:
 
     virtual uint64_t ApproximateVLogFileSize() const = 0;
 
+    virtual Status ExpireAt(LSMKV::SequenceNumber seq) = 0;
+
     /**
      * Delete the given key-value pair if it exists.
      * Returns false iff the key is not found.
@@ -61,5 +64,5 @@ public:
      * This reclaims space from vLog by moving valid value and discarding invalid value.
      * chunk_size is the _size in byte you should AT LEAST recycle.
      */
-    virtual void gc(uint64_t chunk_size) = 0;
+    virtual Status gc() = 0;
 };

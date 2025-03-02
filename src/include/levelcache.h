@@ -82,14 +82,19 @@ namespace LSMKV {
       BuildWhenCompaction(std::vector<std::unique_ptr<Iterator>> *wait_to_merge, std::vector<SSTFileMeta> *new_files,
                           bool build_vlog);
 
+
+      Status Recover();
+
   public:
       LevelCache(const LevelCache &) = delete;
 
       const LevelCache &operator=(const LevelCache &) = delete;
 
-      explicit LevelCache(std::string db_path, Version *v, std::shared_mutex *rwlock);
+      explicit LevelCache(std::string db_path, std::shared_ptr<Version> v, std::shared_mutex *rwlock);
 
       void reset();
+
+      Status gc();
 
       void scan(const Slice &K1, const Slice &K2, std::map<std::string, std::string> *key_map);
 
@@ -117,15 +122,6 @@ namespace LSMKV {
 
       Status PickOverlappingFiles(CompactInfo *compact_info);
 
-      void AddLevel0VlogFile(uint64_t file_no) {
-          vlog_file_map_[file_no] = 0;
-      }
-
-      bool IsLevel0VlogFile(uint64_t file_no) {
-          auto it = vlog_file_map_.find(file_no);
-          return it != vlog_file_map_.end() && it->second == 0;
-      }
-
       uint32_t NumLevelFiles(uint32_t level) const {
           if (level >= cache.size()) {
               return 0;
@@ -133,11 +129,11 @@ namespace LSMKV {
           return cache[level].size();
       }
 
-      Status RemoveUnnecessaryVLog();
-
   private:
       const std::string db_name_;
       std::shared_mutex *rwlock_;
+
+      std::unique_ptr<WritableFile> meta_file_;
 
       Comparator cmp_;
       VLogReader vlog_reader_;
@@ -145,11 +141,7 @@ namespace LSMKV {
 
       std::vector<std::map<uint64_t, SSTFileMeta>> cache;
 
-
-      // sst_file_no | vlog_file_no
-      std::unordered_map<uint64_t, uint64_t> vlog_file_map_;
-
-      Version *version_;
+      std::shared_ptr<Version> version_;
   };
 }
 

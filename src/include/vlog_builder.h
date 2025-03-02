@@ -8,8 +8,10 @@
 #include "utils/slice.h"
 #include "utils/utils.h"
 #include "block_format.h"
+#include "builder.h"
 
 namespace LSMKV {
+  // key | value | crc
   class VLogBuilder {
   private:
       static std::string EncodeKey(const Slice &key, SequenceNumber seq) {
@@ -36,7 +38,7 @@ namespace LSMKV {
 
       Status Open(uint32_t file_no) {
           file_no_ = file_no;
-          auto status = NewAppendableFile(VLogFileName(db_name_, file_no), &file_);
+          auto status = NewPosixWritableFile(VLogFileName(db_name_, file_no), &file_);
           if (!status.ok()) {
               return status;
           }
@@ -57,7 +59,12 @@ namespace LSMKV {
           Status s = Status::OK();
           builder_.reset();
           file_.reset();
+          file_no_ = 0;
           return s;
+      }
+
+      bool Empty() const {
+          return builder_ == nullptr;
       }
 
       ~VLogBuilder() {
@@ -87,6 +94,7 @@ namespace LSMKV {
 
               offset_ = next_index ? 0 : offset_;
 
+              builder_->SetLastKey(internal_key);
               builder_->Flush(next_index);
 
               if (builder_->OK() && sync && false) {

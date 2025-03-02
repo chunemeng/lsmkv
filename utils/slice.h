@@ -11,26 +11,17 @@
 #include <iostream>
 #include "comparator.h"
 
+namespace utils {
+  static inline void m_memcpy(void *__restrict _dest, const void *__restrict _src,
+                              size_t _n) {
+      if (_n > 0)[[likely]] {
+          memcpy(_dest, _src, _n);
+      }
+  }
+
+} // namespace utils
+
 namespace LSMKV {
-  class WriteSlice {
-  public:
-      WriteSlice(char *data, size_t size) : _data(data), _size(size) {
-      }
-
-      char *data() {
-          return _data;
-      }
-
-      size_t size() const {
-          return _size;
-      }
-
-  private:
-      char *_data;
-      size_t _size;
-  };
-
-
   class Slice : public std::string_view {
   public:
       Slice() : std::string_view() {

@@ -12,14 +12,14 @@ namespace LSMKV {
   private:
       void StartSchedule() {
           do {
-              count.acquire();
 
+              sem_.acquire();
               if (stop_.load(std::memory_order_acquire)) [[unlikely]] {
                   break;
               }
               task req;
 
-              if (!fallback_queue_.pop(req)) {
+              if (!fallback_queue_.pop(req)) [[unlikely]] {
                   continue;
               }
 
@@ -37,10 +37,16 @@ namespace LSMKV {
       }
 
       ~Executor() {
+          if (!stop_.load(std::memory_order_acquire)) {
+              Shutdown();
+          }
+      }
+
+      void Shutdown() {
           stop_.store(true, std::memory_order_release);
           auto N = background_threads_.size();
-          count.release(static_cast<long>(N));
 
+          sem_.release(static_cast<long>(N));
           for (auto i = 0; i < N; i++) {
               background_threads_[i].join();
           }
@@ -59,14 +65,16 @@ namespace LSMKV {
               }
           };
           fallback_queue_.push(std::move(ts));
-          count.release();
+          sem_.release();
           return future;
       }
 
 
   private:
       std::atomic<bool> stop_{false};
-      std::counting_semaphore<> count{0};
+      [[maybe_unused]]char pad[64];
+      std::counting_semaphore<> sem_{0};
+      [[maybe_unused]]char pad2[64];
       alp::concurrent_queue <task> fallback_queue_;
       /** The background thread responsible for issuing scheduled requests to the disk manager. */
       std::vector<std::jthread> background_threads_;

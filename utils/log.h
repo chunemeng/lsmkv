@@ -1,10 +1,12 @@
 #pragma once
 
+#include <source_location>
+
 #include "spdlog/spdlog.h"
 #include "spdlog/async_logger.h"
 #include "spdlog/sinks/stdout_sinks.h"
 #include "spdlog/async.h"
-#include <source_location>
+#include "slice.h"
 
 namespace LSMKV::log {
 

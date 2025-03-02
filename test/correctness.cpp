@@ -66,6 +66,11 @@ public:
                 EXPECT((*ap).second, not_found);
                 ap++;
             } else {
+                if ((*ap).first != (*sp).first) {
+                    std::cout << (*ap).first << " " << (*sp).first << std::endl;
+                    assert(0);
+                }
+
                 EXPECT((*ap).first, (*sp).first);
                 EXPECT((*ap).second, (*sp).second);
                 ap++;
@@ -89,9 +94,18 @@ public:
 
         for (i = 0; i < max; i++) {
             auto g = store->get(Key(i));
+            if ((i & 1) == 0 && g != not_found) {
+                std::cout << i << " " << g << std::endl;
+
+                store->get(Key(i));
+                assert(0);
+
+            }
+
             EXPECT((i & 1) ? std::string(i + 1, 's') : not_found,
                    g);
         }
+
         for (i = 1; i < max; ++i) {
             auto res = store->del(Key(i));
 

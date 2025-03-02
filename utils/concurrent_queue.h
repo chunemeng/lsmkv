@@ -55,7 +55,7 @@ namespace alp {
           }
           tail_.compare_exchange_weak(tail, new_node.release());
           size_.fetch_add(1, std::memory_order_relaxed);
-          size_.notify_one();
+//          size_.notify_one();
       }
 
       bool pop(T &value) {

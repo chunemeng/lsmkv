@@ -15,7 +15,7 @@ namespace LSMKV {
 
           std::string fname = SSTFileName(db_info.dbname, file_number);
 
-          Status s = NewWritableFile(fname, &file);
+          Status s = NewUringWritableFile(fname, &file);
           if (!s.ok()) {
               return s;
           }
@@ -33,11 +33,13 @@ namespace LSMKV {
               }
               if (!key.empty()) {
                   meta->largest.DecodeFrom(key);
+                  builder.SetLastKey(key);
               }
 
               // Finish and check for builder errors
               s = builder.Finish();
               if (s.ok()) {
+                  meta->level_ = 0;
                   meta->file_size_ = builder.FileSize();
                   assert(meta->file_size_ > 0);
               }
@@ -52,7 +54,6 @@ namespace LSMKV {
           }
 
           auto sz = GetFileSize(fname);
-
           assert(sz == meta->file_size_);
 
           file.reset();
@@ -61,6 +62,7 @@ namespace LSMKV {
               // Keep it
               v->SetSSTFileNumber(file_number + 1);
           } else {
+              log::error("BuildTable failed: {}", s.ToString());
           }
           return s;
       }

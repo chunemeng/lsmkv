@@ -69,7 +69,7 @@ protected:
     void check_gc(uint64_t size) {
         uint64_t last_offset, cur_offset;
         last_offset = utils::seek_data_block(vlog);
-        store->gc(size);
+        store->gc();
         cur_offset = utils::seek_data_block(vlog);
         GC_EXPECT(cur_offset, last_offset, size);
     }

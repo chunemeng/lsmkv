@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <utility>
+#include <cassert>
 
 namespace LSMKV {
 // Note: memcpy is needed to avoid alignment issues

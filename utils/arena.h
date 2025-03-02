@@ -15,7 +15,7 @@ namespace LSMKV {
       constexpr static int ARENA_BLOCK_SIZE = 4096;
 
       uint64_t waste_{0};
-      uint64_t allocs_{0};
+      std::atomic<uint64_t> allocs_{0};
       char *alloc_ptr;
       char *alloc_aligned_ptr;
       size_t alloc_bytes_remaining;
@@ -70,7 +70,6 @@ namespace LSMKV {
       }
 
       u_int64_t getUsed() const {
-          std::unique_lock lock(mutex);
           return allocs_;
       }
 
@@ -89,7 +88,7 @@ namespace LSMKV {
 
   inline char *Arena::allocate(size_t bytes) {
       std::unique_lock lock(mutex);
-      allocs_ += bytes;
+      allocs_.fetch_add(bytes);
       waste_ -= bytes;
 
       if (bytes <= alloc_bytes_remaining) {
@@ -111,7 +110,7 @@ namespace LSMKV {
   inline char *Arena::allocateAligned(size_t bytes) {
       std::unique_lock lock(mutex);
       // alloc_ptr % align
-      allocs_ += bytes;
+      allocs_.fetch_add(bytes);
       waste_ -= bytes;
       if (bytes <= alloc_bytes_remaining) {
           alloc_aligned_ptr -= bytes;

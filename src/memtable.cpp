@@ -8,19 +8,6 @@
 
 namespace LSMKV {
 
-  static Slice GetValueFromMemKey(Slice key) {
-      auto sz = DecodeFixed32(key.data());
-
-      auto val_sz = key[sz + 4];
-      // 4 is the size of key
-      // 1 is the size of value size
-      return {key.data() + sz + 5, static_cast<size_t>(val_sz)};
-  }
-
-  static Slice GetKeyFromMemKey(Slice key) {
-      return {key.data() + 4, DecodeFixed32(key.data())};
-  }
-
   class MemTableIterator : public Iterator {
   public:
       explicit MemTableIterator(MemTable::Table *table) : _iter(table) {}
@@ -108,8 +95,8 @@ namespace LSMKV {
       }
 
 
-      assert(!type == ValueType::kTypeValue || value.size() == 16);
-      assert(!type == ValueType::kTypeDeletion || value.empty());
+      assert(type != ValueType::kTypeValue || value.size() == 16);
+      assert(type != ValueType::kTypeDeletion || value.empty());
 
 
       char *buf = arena.allocate(sz);
@@ -124,7 +111,7 @@ namespace LSMKV {
 
       utils::m_memcpy(buf + 12 + key.size() + 1, value.data(), vsz);
 
-      size.fetch_add(sz, std::memory_order_release);
+      size.fetch_add(1, std::memory_order_release);
 
       table.insert(Slice(buf, sz));
 
@@ -133,7 +120,7 @@ namespace LSMKV {
 
   MemTable::~MemTable() = default;
 
-  uint32_t MemTable::memoryUsage() const { return size.load(std::memory_order_acquire); }
+  uint32_t MemTable::memoryUsage() const { return arena.getUsed(); }
 
   bool MemTable::contains(const Slice &key) const { return table.contains(key); }
 

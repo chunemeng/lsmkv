@@ -146,9 +146,9 @@ namespace LSMKV {
   };
 
 
-  template<typename VirtualC, typename ...T>
+  template<typename VirtualC, typename ...BuiltInC>
   struct BuildComparatorType {
-      using type = std::variant<detail::ComparatorImpl<T>..., VirtualC>;
+      using type = std::variant<detail::ComparatorImpl<BuiltInC>..., VirtualC>;
   };
 
 

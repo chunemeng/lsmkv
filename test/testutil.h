@@ -10,6 +10,7 @@ namespace LSMKV::testutils {
       std::string res;
       res.resize(8);
       EncodeFixed64(res.data(), std::byteswap(i));
+      return res;
   }
 
   inline void put(int length, const std::string &s, KVStore *store) {

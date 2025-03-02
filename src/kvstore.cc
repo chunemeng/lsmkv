@@ -35,21 +35,25 @@ LSMKV::Status KVStoreAPI::Open(const std::string &dir, const std::string &vlog,
 }
 
 KVStore::KVStore(const std::string &dir, const std::string &vlog)
-        : db_info(dir, vlog), mem_(std::make_shared<LSMKV::MemTable>()), imm_(nullptr), vlog_reader_(dir) {
-    version_ = new LSMKV::Version(DBName());
+        : db_info(dir, vlog), mem_(std::make_shared<LSMKV::MemTable>()), imm_(nullptr),
+          version_(std::make_shared<LSMKV::Version>(DBName())), vlog_reader_(dir, version_) {
     vlog_ = std::make_unique<LSMKV::VLogBuilder>(DBName(), version_->executor_);
     auto vlog_no = version_->NewVLogFileNumber();
     vlog_->Open(vlog_no);
     kc = std::make_unique<LSMKV::LevelCache>(dir, version_, &compaction_lock_);
-    kc->AddLevel0VlogFile(vlog_no);
 }
 
 KVStore::~KVStore() {
+    shutting_down_.store(true, std::memory_order_release);
+    scheduler_.Shutdown();
     std::unique_lock lock(rwlock_);
-    std::unique_lock flock(compaction_lock_);
+    std::unique_lock compaction_lock(compaction_lock_);
 
-    delete version_;
-    delete cache;
+    version_ = nullptr;
+    mem_ = nullptr;
+    imm_ = nullptr;
+    vlog_ = nullptr;
+    kc = nullptr;
 }
 
 
@@ -130,6 +134,10 @@ void KVStore::CompactMemTable(std::shared_ptr<LSMKV::MemTable> &&imm) {
 }
 
 Status KVStore::CompactSSTFile(uint32_t level, bool may_trigger_next_compaction) {
+    if (shutting_down_.load(std::memory_order_acquire)) {
+        return Status::OK();
+    }
+
     std::unique_ptr<LSMKV::CompactInfo> compact_info = std::make_unique<LSMKV::CompactInfo>();
 
     compact_info->level = level;
@@ -150,9 +158,7 @@ Status KVStore::CompactSSTFile(uint32_t level, bool may_trigger_next_compaction)
         return status;
     }
 
-    return status;
-
-//    return CompactSSTFile(level + 1, may_trigger_next_compaction);
+    return CompactSSTFile(level + 1, may_trigger_next_compaction);
 }
 
 
@@ -164,17 +170,17 @@ Status KVStore::Prepare() {
         if (bg_catch_error_.load(std::memory_order_acquire)) {
             s = Status::BGError();
             break;
-        } else if (allow_delay && version_->NumLevelFiles(0) >= LSMKV::Option::kL0_CompactionTrigger) {
+        } else if (allow_delay && kc->NumLevelFiles(0) >= LSMKV::Option::kL0_CompactionTrigger) {
             rwlock_.unlock();
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             allow_delay = false;
             rwlock_.lock();
         } else if (mem_->memoryUsage() <= MEM_MAX_SIZE) {
             break;
-        } else if (auto imm = imm_.load(std::memory_order_acquire); imm != nullptr) {
+        } else if (imm_.load(std::memory_order_acquire) != nullptr) {
             // We have filled up the current memtable, but the previous is still being compacted
             rwlock_.atomic_wait(background_compaction_scheduled_, true);
-        } else if (version_->NumLevelFiles(0) >= LSMKV::Option::kL0_CompactionTrigger) {
+        } else if (kc->NumLevelFiles(0) >= LSMKV::Option::kL0_CompactionTrigger) {
             rwlock_.atomic_wait(background_compaction_scheduled_, true);
         } else {
             assert(imm_.load(std::memory_order_acquire) == nullptr);
@@ -205,6 +211,7 @@ Status KVStore::put(LSMKV::Slice key, LSMKV::Slice val) {
 }
 
 Status KVStore::WriteImpl(LSMKV::Slice key, LSMKV::Slice val, LSMKV::ValueType type) {
+    std::unique_lock lock(rwlock_, std::adopt_lock);
     auto last_seq = version_->LastSequence();
     Status s = Status::OK();
 
@@ -225,10 +232,9 @@ Status KVStore::WriteImpl(LSMKV::Slice key, LSMKV::Slice val, LSMKV::ValueType t
             version_->ReuseVLogFileNumber(vlog_no);
             return s;
         }
-
-        kc->AddLevel0VlogFile(vlog_no);
     }
 
+    // wal
     s = vlog_->Append(seq, key, val, &info);
 
     if (s.ok()) {
@@ -243,8 +249,6 @@ Status KVStore::WriteImpl(LSMKV::Slice key, LSMKV::Slice val, LSMKV::ValueType t
             version_->SetLastSequence(last_seq + 1);
         }
     }
-
-    rwlock_.unlock();
 
     return s;
 }
@@ -298,9 +302,10 @@ std::string KVStore::get(LSMKV::Slice key) {
 
     if (s.ok()) {
         return res;
+    } else if (!s.IsNotFound()) {
+        LSMKV::log::error("get error: {}", s.ToString());
     }
-
-    return "";
+    return {};
 }
 
 Status KVStore::del(LSMKV::Slice key) {
@@ -352,7 +357,6 @@ void KVStore::reset() {
     vlog_->Open(vlog_no);
 
     kc->reset();
-    kc->AddLevel0VlogFile(vlog_no);
     mem_ = std::make_shared<LSMKV::MemTable>();
 }
 
@@ -411,12 +415,16 @@ Status KVStore::scan(LSMKV::Slice key1, LSMKV::Slice key2,
         }
         LSMKV::VLogEntryInfo info{};
         status = info.Decode(it->second);
-        if (!status.ok()) {
+        if (!status.ok()) [[unlikely]] {
             break;
         }
         status = vlog_reader_.Read(info, &it->second);
-        if (!status.ok()) {
-            break;
+        if (!status.ok()) [[unlikely]] {
+            if (status.IsExpired()) {
+                list.erase(it);
+            } else {
+                break;
+            }
         }
     }
 
@@ -427,9 +435,8 @@ Status KVStore::scan(LSMKV::Slice key1, LSMKV::Slice key2,
  * This reclaims space from vLog by moving valid value and discarding invalid
  * value. chunk_size is the _size in byte you should AT LEAST recycle.
  */
-void KVStore::gc(uint64_t chunk_size) {
-    assert(false);
-    return;
+Status KVStore::gc() {
+    return kc->gc();
 }
 
 Status KVStore::WriteLevel0Table(std::shared_ptr<LSMKV::MemTable> &&imm) {
@@ -443,7 +450,7 @@ Status KVStore::WriteLevel0Table(std::shared_ptr<LSMKV::MemTable> &&imm) {
 
 
     // Write a new SST file
-    s = LSMKV::BuildTable(db_info, version_, iter, &meta);
+    s = LSMKV::BuildTable(db_info, version_.get(), iter, &meta);
 
 
     delete iter;
@@ -495,4 +502,21 @@ uint64_t KVStore::ApproximateVLogFileSize() const {
     }
 
     return size;
+}
+
+Status KVStore::ExpireAt(LSMKV::SequenceNumber seq) {
+    auto cur_seq = version_->LastSequence();
+
+    if (seq > cur_seq) {
+        return Status::Corruption("seq is larger than current seq");
+    }
+
+    auto last_live_seq = version_->LastLivingSequence();
+    if (seq < last_live_seq) {
+        return Status::OK();
+    }
+
+    version_->SetLastLivingSequence(seq + 1);
+
+    return Status::OK();
 }

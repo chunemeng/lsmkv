@@ -12,8 +12,6 @@ namespace LSMKV {
           need_next_index_entry_ = false;
       }
 
-      last_key_ = key;
-
       if (filter_block_ != nullptr) {
           filter_block_->AddKey(ExtractUserKey(key));
       }
@@ -28,6 +26,7 @@ namespace LSMKV {
 
       const size_t block_size = data_block_.BlockSize();
       if (block_size >= Option::block_size) {
+          last_key_ = key;
           Flush();
       }
   }

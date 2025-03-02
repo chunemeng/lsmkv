@@ -3,6 +3,7 @@
 #include <mutex>
 #include <atomic>
 #include <condition_variable>
+#include "log.h"
 
 namespace LSMKV {
   // this function name is to be consistent with std::xxx_lock
@@ -130,8 +131,10 @@ namespace LSMKV {
           mtx_.unlock();
 
           if (need_notify) {
-              writer_waiting_signal_.notify_one();
+              writer_waiting_signal_.notify_all();
           }
+
+
       }
 
       bool try_upgrade_to_writer() {
@@ -153,7 +156,6 @@ namespace LSMKV {
 //          move below to unlock function, because mutex is held now
 //          writer_waiting_ = false;
 //          writer_waiting_signal_.notify_one();
-
 
           if (auto lk = lock_inner()) {
               lock_inner_wait(lk);

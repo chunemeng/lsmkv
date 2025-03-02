@@ -22,12 +22,12 @@
 class KVStore : public KVStoreAPI {
 private:
     LSMKV::Executor scheduler_{};
-    LSMKV::Version *version_;
 
     LSMKV::DB_Info db_info;
 
+    std::shared_ptr<LSMKV::Version> version_;
+
     std::unique_ptr<LSMKV::LevelCache> kc;
-    LSMKV::Cache *cache{};
 
     std::unique_ptr<LSMKV::VLogBuilder> vlog_;
 
@@ -100,7 +100,9 @@ public:
 
     uint64_t ApproximateVLogFileSize() const override;
 
+    Status ExpireAt(LSMKV::SequenceNumber seq);
+
     void reset() override;
 
-    void gc(uint64_t chunk_size) override;
+    Status gc() override;
 };
