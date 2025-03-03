@@ -415,9 +415,11 @@ Status KVStore::scan(LSMKV::Slice key1, LSMKV::Slice key2,
         }
         LSMKV::VLogEntryInfo info{};
         status = info.Decode(it->second);
+
         if (!status.ok()) [[unlikely]] {
             break;
         }
+
         status = vlog_reader_.Read(info, &it->second);
         if (!status.ok()) [[unlikely]] {
             if (status.IsExpired()) {

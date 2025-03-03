@@ -59,9 +59,9 @@ private:
 
 class YCSBBenchmark : public ::testing::Test {
 protected:
-    static const int kNumKeys = 10000;
-    static const int kValueSize = 1024;
-    static const int kNumThreads = 8;
+    static const int kNumKeys = 50000;
+    static const int kValueSize = 4096;
+    static const int kNumThreads = 10;
 
     struct OperationStats {
         std::atomic<int64_t> total_ops{0};
@@ -97,17 +97,14 @@ protected:
         }
 
     private:
-        std::mt19937 gen_;
+        std::minstd_rand gen_;
         Distribution distribution_;
         std::uniform_int_distribution<uint64_t> uniform_dist_;
         zipf_distribution<uint64_t> zipf_dist_;
     };
 
     std::string Key(uint64_t i) {
-        std::string key;
-        key.resize(8);
-        LSMKV::EncodeFixed64(&key[0], std::byteswap(i));
-        return key;
+        return std::to_string(i);
     }
 
     void Reset() {
@@ -128,13 +125,12 @@ protected:
             threads.emplace_back([&, i]() {
                 OperationStats local_stats;
                 WorkloadGenerator wg(kNumKeys, WorkloadGenerator::ZIPFIAN);
-                std::string value(kValueSize, 'a'); // 测试用固定值
+                std::string value(kValueSize, 'a');
 
                 for (int j = 0; j < kNumKeys / kNumThreads * 10; ++j) {
                     auto key = wg.NextKey();
                     auto op_start = std::chrono::high_resolution_clock::now();
 
-                    // 执行读写操作
                     if ((j % (read_ratio + write_ratio)) < read_ratio) {
                         db_->get(Key(key));
                     } else {
@@ -149,7 +145,6 @@ protected:
                     local_stats.latency_samples.push_back(duration.count());
                 }
 
-                // 合并统计结果
                 global_stats.total_ops += local_stats.total_ops;
                 global_stats.total_latency_ns += local_stats.total_latency_ns;
                 latency_samples[i] = std::move(local_stats.latency_samples);

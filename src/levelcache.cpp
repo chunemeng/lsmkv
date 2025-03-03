@@ -130,6 +130,7 @@ namespace LSMKV {
   void LevelCache::scan(const Slice &K1, const Slice &K2, std::map<std::string, std::string> *key_map) {
       std::shared_lock lock(*rwlock_);
       // TODO: add binary search in each level
+      // TODO: add coroutine support iterator
       const auto seq = ExtractSequenceNumber(K1);
 
       Comparator cmp = UserKeyComparator();
@@ -197,6 +198,8 @@ namespace LSMKV {
               }
 
               if (!tmp.empty()) {
+                  // there still need batch read
+                  // cause the mvcc key may overlap in different files
                   s = sst_reader_.ReadBatch(tmp, key.internal_key(), info);
 
                   if (s.ok()) {

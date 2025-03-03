@@ -17,6 +17,7 @@
 #include "version.h"
 #include "lsmkv/dbformat.h"
 #include "utils/log.h"
+#include "reader.h"
 
 namespace LSMKV {
   static inline Status

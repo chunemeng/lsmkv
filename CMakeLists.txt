@@ -14,7 +14,7 @@ OPTION(ENABLE_BENCHMARK "Enable benchmark" OFF)
 OPTION(ENABLE_DEBUG "Enable debug" OFF)
 OPTION(ENABLE_DEBUG_INFO "Enable debug info" ON)
 # Sanitizers(enable once at a time)
-OPTION(ENABLE_ASAN "Enable AddressSanitizer" ON)
+OPTION(ENABLE_ASAN "Enable AddressSanitizer" OFF)
 OPTION(ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 OPTION(ENABLE_TSAN "Enable ThreadSanitizer" OFF)
 
