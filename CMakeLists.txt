@@ -10,7 +10,6 @@ message(STATUS "C++ compiler version: ${CMAKE_CXX_COMPILER_VERSION}")
 
 
 OPTION(ENABLE_TEST "Enable test" ON)
-OPTION(ENABLE_BENCHMARK "Enable benchmark" OFF)
 OPTION(ENABLE_DEBUG "Enable debug" OFF)
 OPTION(ENABLE_DEBUG_INFO "Enable debug info" ON)
 # Sanitizers(enable once at a time)
@@ -61,11 +60,6 @@ include_directories("${CMAKE_SOURCE_DIR}")
 include_directories("${CMAKE_SOURCE_DIR}/include")
 
 add_subdirectory(src)
-
-if (ENABLE_BENCHMARK)
-    add_subdirectory("third_party/benchmark")
-    add_subdirectory(bench)
-endif ()
 
 if (ENABLE_TEST)
     enable_testing()

@@ -522,3 +522,6 @@ Status KVStore::ExpireAt(LSMKV::SequenceNumber seq) {
 
     return Status::OK();
 }
+
+Status KVStore::Recover() {
+}

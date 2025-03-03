@@ -44,7 +44,7 @@ namespace LSMKV {
             return static_cast<const Impl *>(this)->name_impl();
         }
     };
-  }
+  } // namespace detail
 
 
   class InternalKeyComparator : public detail::ComparatorImpl<InternalKeyComparator> {

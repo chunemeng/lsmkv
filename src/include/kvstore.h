@@ -65,6 +65,8 @@ private:
 
     Status Prepare();
 
+    Status Recover();
+
     void RecordBackgroundError(LSMKV::Slice s);
 
     void BackgroundCall();
