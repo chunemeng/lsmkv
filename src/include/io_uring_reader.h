@@ -40,7 +40,7 @@ namespace LSMKV {
       }
 
       template<typename Func>
-      void process_completions(Func &&f) {
+      void process_completions_w_call_back(Func &&f) {
           io_uring_cqe *cqe;
           io_uring_wait_cqe(&ring_, &cqe);
           unsigned head;

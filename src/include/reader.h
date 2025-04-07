@@ -47,7 +47,6 @@ namespace LSMKV {
 
 
     struct CoroutineHandleAwaiter {
-
         std::coroutine_handle<> captured_handle;
 
         bool await_ready() const noexcept { return false; }
@@ -63,7 +62,6 @@ namespace LSMKV {
     };
 
   }
-
 
   class SSTReader {
   public:
@@ -150,7 +148,7 @@ namespace LSMKV {
       }
 
       Status ReadOne(const SSTFileMeta *meta, Slice internal_key, VLogEntryInfo *vlog_info) {
-          SequentialFile *file;
+          std::unique_ptr<SequentialFile> file;
           Status status = NewSequentialFile(SSTFileName(db_name_, meta->file_number_), &file);
           if (!status.ok()) {
               return status;
@@ -235,15 +233,17 @@ namespace LSMKV {
       }
 
       detail::Task Async_ReadOne(UringExecutor &executor, const SSTFileMeta *meta, const Slice &internal_key) {
+		  // sst k|v_ptr k|v_ptr
+		  // vlog k|v k|v
           auto file_name = SSTFileName(db_name_, meta->file_number_);
 
           int fd = open(file_name.c_str(), O_RDONLY | kOpenBaseFlags);
 
           struct Guard {
-              int &active_tasks_;
+              uint32_t &active_tasks_;
               int fd_;
 
-              Guard(int &active_tasks, int fd) : active_tasks_(active_tasks), fd_(fd) { ++active_tasks_; }
+              Guard(uint32_t &active_tasks, int fd) : active_tasks_(active_tasks), fd_(fd) { ++active_tasks_; }
 
               ~Guard() {
                   --active_tasks_;
@@ -265,6 +265,8 @@ namespace LSMKV {
           std::string buffer;
           buffer.resize(Footer::kEncodedLength);
           input = buffer;
+
+
           auto h = co_await detail::CoroutineHandleAwaiter{};
 
           auto status = executor.async_read(fd, buffer.data(), Footer::kEncodedLength,
@@ -362,7 +364,7 @@ namespace LSMKV {
           std::vector<detail::Task> tasks;
           active_tasks += metas.size();
 
-          log::error("meta size: {}", metas.size());
+          log::debug("meta size: {}", metas.size());
           for (const auto &meta: metas) {
               tasks.emplace_back(Async_ReadOne(executor, meta, internal_key));
           }
@@ -373,7 +375,7 @@ namespace LSMKV {
           };
 
           while (active_tasks > 0) {
-              executor.process_completions(fun);
+              executor.process_completions_w_call_back(fun);
           }
 
           for (auto &task: tasks) {
@@ -400,6 +402,7 @@ namespace LSMKV {
               return ReadOne(*metas.begin(), internal_key, vlog_info);
           }
 
+
 //          for (const auto &meta: metas) {
 //              auto status = ReadOne(meta, internal_key, vlog_info);
 //              if (status.ok() || !status.IsNotFound()) {
@@ -412,7 +415,7 @@ namespace LSMKV {
       }
 
   private:
-      int active_tasks = 0;
+      uint32_t active_tasks = 0;
 
       const std::string db_name_;
   };
