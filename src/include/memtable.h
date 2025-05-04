@@ -20,10 +20,7 @@ namespace LSMKV {
   inline static Slice GetValueFromMemKey(Slice key) {
       auto sz = DecodeFixed32(key.data());
 
-      auto val_sz = key[sz + 4];
-      // 4 is the size of key
-      // 1 is the size of value size
-      return {key.data() + sz + 5, static_cast<size_t>(val_sz)};
+      return {key.data() + sz + 4, static_cast<size_t>(key.size() - sz - 4)};
   }
 
   inline static Slice GetKeyFromMemKey(Slice key) {

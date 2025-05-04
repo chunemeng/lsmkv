@@ -58,7 +58,7 @@ namespace LSMKV {
                       return true;
                   }
                   case ValueType::kTypeDeletion: {
-                      *s = Status::NotFound();
+                      *s = Status::NotFound("get a delete key in mem");
                       return true;
                   }
               }
@@ -73,27 +73,9 @@ namespace LSMKV {
       auto vsz = value.size();
       // 8 is the size of sequence number and value type
       // 4 is the size of key size
-      // 1 is the size of value size
-      auto sz = vsz + 8 + key.size() + 4 + 1;
+      auto sz = 16 + 8 + key.size() + 4;
 
       auto type = static_cast<ValueType>(seq & 0xff);
-
-      switch (type) {
-          case ValueType::kTypeValue:
-              // this value is VLogInfo in vlog_builder.h
-              if (vsz != 16) {
-                  return Status::Corruption("bad value size");
-              }
-              break;
-          case ValueType::kTypeDeletion:
-              if (vsz != 0) {
-                  return Status::Corruption("bad deletion size");
-              }
-              break;
-          default:
-              return Status::Corruption("unknown value type");
-      }
-
 
       assert(type != ValueType::kTypeValue || value.size() == 16);
       assert(type != ValueType::kTypeDeletion || value.empty());
@@ -107,9 +89,7 @@ namespace LSMKV {
 
       utils::m_memcpy(buf + 4, key.data(), key.size());
       EncodeFixed64(buf + 4 + key.size(), seq);
-      EncodeFixed8(buf + 4 + key.size() + 8, static_cast<uint8_t>(vsz));
-
-      utils::m_memcpy(buf + 12 + key.size() + 1, value.data(), vsz);
+      utils::m_memcpy(buf + 12 + key.size(), value.data(), vsz);
 
       size.fetch_add(1, std::memory_order_release);
 
