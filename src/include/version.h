@@ -29,6 +29,7 @@ namespace LSMKV {
           fileno_ = 0;
           last_vlog_file_no_ = 0;
           max_level = 7;
+          last_sequence_ = 0;
       }
 
       uint64_t NewVLogFileNumber() {
