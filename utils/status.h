@@ -22,9 +22,7 @@ namespace LSMKV {
   private:
       void AddMessage(Slice msg) {
           // 6 bytes are enough to store the length of the message and the code and the '\0' at the end
-          state_.reserve(msg.size() + 1);
           state_ = msg;
-          state_.append("\0", 1);
       }
 
   public:
@@ -52,8 +50,14 @@ namespace LSMKV {
           return {Code::kOk};
       }
 
-      static Status NotFound() noexcept {
-          return {Code::kNotFound};
+      static Status NotFound(Slice msg = {nullptr, 0}) noexcept {
+          Status s;
+          s.code_ = Code::kNotFound;
+          if (!msg.empty()) {
+              s.AddMessage(msg);
+          }
+
+          return s;
       }
 
       static Status IOError(Slice msg = {nullptr, 0}) noexcept {
