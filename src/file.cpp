@@ -112,7 +112,7 @@ namespace LSMKV {
 
   Status UringWritableFile::SubmitIO() {
       if (pos_ == 0) {
-          return Status::NotFound();
+          return Status::NotFound("No data to write" + line_info());
       }
 
       struct io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
@@ -142,9 +142,11 @@ namespace LSMKV {
       while (true) {
           int ret = io_uring_peek_cqe(&ring_, &cqe);
           if (ret == -EAGAIN) {
-              ret = io_uring_wait_cqe(&ring_, &cqe);
+              do {
+                  ret = io_uring_wait_cqe(&ring_, &cqe);
+              } while (ret == -EINTR);
               if (ret < 0) {
-                  return Status::IOError(std::string{"io_uring_wait_cqe failed"} + std::strerror(-ret));
+                  return Status::IOError(std::string{"io_uring_wait_cqe failed:"} + std::strerror(-ret));
               }
           } else if (ret < 0) {
               return Status::IOError("io_uring_peek_cqe failed" +
