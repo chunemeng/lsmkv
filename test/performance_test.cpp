@@ -19,7 +19,7 @@ private:
             for (int i = 0; i < max; ++i) {
                 auto size = gen() % 20000 + 1;
                 aver_value_size += size;
-                store.put(i, std::string(size, 's'));
+                store->put(i, std::string(size, 's'));
             }
             aver_value_size /= 1000000;
             std::cout << aver_value_size;

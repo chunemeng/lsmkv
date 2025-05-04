@@ -6,7 +6,7 @@
 
 #include "LSMKV/kvstore_api.h"
 #include "src/include/kvstore.h"
-#include "gtest/gtest.h"
+#include <gtest/gtest.h>
 
 #define MB (1024 * 1024)
 
