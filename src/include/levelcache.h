@@ -72,10 +72,11 @@ namespace LSMKV {
   private:
       uint32_t PickSSTFileNum(uint32_t level) const {
           if (level == 0) {
+              // safe x
               return cache[0].size();
           }
           auto num = static_cast<uint32_t>(std::pow(10, level));
-
+          // safe x
           return cache[level].size() < num ? 0 : num - cache[level].size() + 2;
       }
 
@@ -109,8 +110,6 @@ namespace LSMKV {
 
       void AddFile(uint32_t level, SSTFileMeta *file);
 
-      void AddFile(uint32_t level, std::vector<SSTFileMeta *> &files);
-
       void AddFile(uint32_t level, std::vector<SSTFileMeta> &files);
 
       Status RemoveFile(uint32_t level, uint64_t file_no);
@@ -124,9 +123,21 @@ namespace LSMKV {
       Status PickOverlappingFiles(CompactInfo *compact_info);
 
       uint32_t NumLevelFiles(uint32_t level) const {
+          std::shared_lock lock(*rwlock_);
+          // safe s
           if (level >= cache.size()) {
               return 0;
           }
+          // safe s
+          return cache[level].size();
+      }
+
+      uint32_t NumLevelFilesEx(uint32_t level) const {
+          // safe x
+          if (level >= cache.size()) {
+              return 0;
+          }
+          // safe x
           return cache[level].size();
       }
 

@@ -11,6 +11,7 @@ namespace LSMKV {
                                                                                                                std::move(
                                                                                                                        v)) {
       NewAppendableFile(VersionFileName(db_name_), &meta_file_);
+      // safe init
       cache.resize(8);
   }
 
@@ -120,6 +121,7 @@ namespace LSMKV {
   };
 
   void LevelCache::reset() {
+      // safe x
       cache.clear();
   }
 
@@ -136,6 +138,7 @@ namespace LSMKV {
       Comparator cmp = UserKeyComparator();
 
       {
+          // safe x
           const auto &level0 = cache[0];
 
           // in level0, the bigger file_number_ means the key with higher timestamp
@@ -168,7 +171,7 @@ namespace LSMKV {
   Status LevelCache::get(const QueryKey &key, VLogEntryInfo *info) {
       std::shared_lock lock(*rwlock_);
 
-      Status s = Status::NotFound();
+      Status s = Status::NotFound(line_info());
 
       {
           const auto &level0 = cache[0];
@@ -179,7 +182,6 @@ namespace LSMKV {
                   tmp.emplace_back(std::addressof(it.second));
               }
           }
-
 
           if (!tmp.empty()) {
               s = sst_reader_.ReadBatch(tmp, key.internal_key(), info);
@@ -219,6 +221,7 @@ namespace LSMKV {
   }
 
   bool LevelCache::empty() const {
+      std::shared_lock lock(*rwlock_);
       return cache.empty();
   }
 
@@ -230,18 +233,8 @@ namespace LSMKV {
       cache[level].emplace(f->file_number_, std::move(*f));
   }
 
-  void LevelCache::AddFile(uint32_t level, std::vector<SSTFileMeta *> &files) {
-      if (level >= cache.size()) {
-          cache.resize(level + 1);
-      }
-
-
-      for (auto &file: files) {
-          cache[level].emplace(file->file_number_, std::move(*file));
-      }
-  }
-
   Status LevelCache::MoveFiles(uint32_t level, const std::vector<SSTFileMeta *> &metas, uint32_t new_level) {
+      // safe x
       if (level >= cache.size()) {
           return Status::Corruption("level out of range");
       }
@@ -256,7 +249,7 @@ namespace LSMKV {
       for (auto &meta: metas) {
           auto it = level_cache.find(meta->file_number_);
           if (it == level_cache.end()) {
-              return Status::NotFound();
+              return Status::NotFound(line_info());
           }
           it->second.level_ = new_level;
 
@@ -283,6 +276,7 @@ namespace LSMKV {
   Status LevelCache::PickCompaction(CompactInfo *compact_info) {
       auto level = compact_info->level;
 
+      // safe x
       if (level >= cache.size()) {
           return Status::OK();
       }
@@ -421,7 +415,7 @@ namespace LSMKV {
       auto it = level_cache.find(file_no);
 
       if (it == level_cache.end()) {
-          return Status::NotFound();
+          return Status::NotFound(line_info());
       }
 
       level_cache.erase(it);
@@ -477,7 +471,8 @@ namespace LSMKV {
               auto file_number = version_->NewSSTFileNumber();
               auto fname = SSTFileName(db_name_, file_number);
               s = NewUringWritableFile(fname, &file);
-              builder = std::make_unique<TableBuilder>(file.get(), &cmp_, version_->executor_);
+              builder = std::make_unique<TableBuilder>(file.get(), &cmp_, version_->executor_,
+                                                       (LSMKV::Option::enable_fixed_length == 8) && build_vlog);
 
               if (build_vlog) {
                   if (vlog_builder == nullptr) {
@@ -498,7 +493,8 @@ namespace LSMKV {
           }
 
           if (value_type != kTypeValue) {
-              builder->Add(key, {});
+              VLogEntryInfo dummy_info{};
+              builder->Add(key, dummy_info.ToSlice());
           } else {
               if (build_vlog) {
                   s = vlog_entry_info.Decode(value);
