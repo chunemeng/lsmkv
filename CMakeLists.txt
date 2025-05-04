@@ -8,6 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 message(STATUS "C compiler version: ${CMAKE_C_COMPILER_VERSION}")
 message(STATUS "C++ compiler version: ${CMAKE_CXX_COMPILER_VERSION}")
 
+cmake_policy(SET CMP0135 NEW)
 
 OPTION(ENABLE_TEST "Enable test" ON)
 OPTION(ENABLE_DEBUG "Enable debug" OFF)
