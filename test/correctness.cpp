@@ -42,8 +42,15 @@ public:
         phase();
 
         // Test after all insertions
-        for (i = 0; i < max; ++i)
+        for (i = 0; i < max; ++i) {
             EXPECT(std::string(i + 1, 's'), store->get(Key(i)));
+            if (std::string(i + 1, 's') != store->get(Key(i))) {
+                auto res = store->get(Key(i));
+                std::cout << i << " " << res << std::endl;
+                res = store->get(Key(i));
+                assert(0);
+            }
+        }
         // p3
         phase();
 
@@ -55,7 +62,7 @@ public:
             list_ans.emplace_back(Key(i), std::string(i + 1, 's'));
         }
 
-        store->scan(Key(0), Key(max / 2 - 1), list_stu);
+        store->scan_w_cro(Key(0), Key(max / 2 - 1), list_stu);
         EXPECT(list_ans.size(), list_stu.size());
 
         auto ap = list_ans.begin();
@@ -72,6 +79,11 @@ public:
                 }
 
                 EXPECT((*ap).first, (*sp).first);
+                if ((*ap).second != (*sp).second) {
+                    std::cout << (*ap).second << " " << (*sp).second << std::endl;
+                    assert(0);
+                }
+
                 EXPECT((*ap).second, (*sp).second);
                 ap++;
                 sp++;
@@ -208,6 +220,96 @@ public:
         report();
     }
 
+    std::pair<double, double> scan_test(uint64_t max) {
+        uint64_t i;
+        std::string val;
+
+
+        // Test a single key
+        EXPECT(not_found, store->get(Key(1)));
+        store->put(Key(1), "SE");
+        EXPECT("SE", store->get(Key(1)));
+        EXPECT(true, store->del(Key(1)).ok());
+        EXPECT(not_found, store->get(Key(1)));
+        EXPECT(false, store->del(Key(1)).ok());
+
+        // Test multiple key-value pairs
+        for (i = 0; i < max; ++i) {
+            store->put(Key(i), std::string(i + 1, 's'));
+        }
+
+//        Test scan
+        std::list<std::pair<std::string, std::string>> list_ans;
+        std::list<std::pair<std::string, std::string>> list_stu;
+
+        for (i = 0; i < max / 2; ++i) {
+            list_ans.emplace_back(Key(i), std::string(i + 1, 's'));
+        }
+        std::chrono::high_resolution_clock::time_point start, end;
+
+        start = std::chrono::high_resolution_clock::now();
+        store->scan(Key(0), Key(max / 2 - 1), list_stu);
+        end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> elapsed = end - start;
+        auto data = elapsed.count();
+
+        EXPECT(list_ans.size(), list_stu.size());
+
+        auto ap = list_ans.begin();
+        auto sp = list_stu.begin();
+        while (ap != list_ans.end()) {
+            if (sp == list_stu.end()) {
+                EXPECT((*ap).first, Key(-1));
+                EXPECT((*ap).second, not_found);
+                ap++;
+            } else {
+                if ((*ap).first != (*sp).first) {
+                    std::cout << (*ap).first << " " << (*sp).first << std::endl;
+                    assert(0);
+                }
+
+                EXPECT((*ap).first, (*sp).first);
+                EXPECT((*ap).second, (*sp).second);
+                ap++;
+                sp++;
+            }
+        }
+
+        list_stu.clear();
+
+        start = std::chrono::high_resolution_clock::now();
+        store->scan_w_cro(Key(0), Key(max / 2 - 1), list_stu);
+        end = std::chrono::high_resolution_clock::now();
+        elapsed = end - start;
+        auto data2 = elapsed.count();
+
+        EXPECT(list_ans.size(), list_stu.size());
+
+        ap = list_ans.begin();
+        sp = list_stu.begin();
+        while (ap != list_ans.end()) {
+            if (sp == list_stu.end()) {
+                EXPECT((*ap).first, Key(-1));
+                EXPECT((*ap).second, not_found);
+                ap++;
+            } else {
+                if ((*ap).first != (*sp).first) {
+                    std::cout << (*ap).first << " " << (*sp).first << std::endl;
+                    assert(0);
+                }
+
+                EXPECT((*ap).first, (*sp).first);
+                EXPECT((*ap).second, (*sp).second);
+                ap++;
+                sp++;
+            }
+        }
+
+        list_stu.clear();
+        list_ans.clear();
+        return {data, data2};
+    }
+
     void SetUp() override {
         Test::SetUp();
         KVStoreAPI::Open("/home/data", "/home/data/vlog", &store);
@@ -240,4 +342,29 @@ TEST_F(CorrectnessTest, GCTest) {
     std::cout << "[GC Test]" << std::endl;
 
 //    gc_test(GC_TEST_MAX);
+}
+
+
+TEST_F(CorrectnessTest, SimpleCoroTest) {
+    store->reset();
+
+    std::cout << "[Coro Test]" << std::endl;
+    auto data = scan_test(SIMPLE_TEST_MAX);
+    std::cout << "Scan time: " << data.first << std::endl;
+    std::cout << "Scan w cro time: " << data.second << std::endl;
+}
+
+TEST_F(CorrectnessTest, LargeCoroTest) {
+
+    std::cout << "[Coro Test]" << std::endl;
+    double no_coro = 0;
+    double coro = 0;
+    for (int i = 0; i < 1; ++i) {
+        store->reset();
+        auto data = scan_test(LARGE_TEST_MAX);
+        no_coro += data.first;
+        coro += data.second;
+    }
+    std::cout << "Scan time: " << no_coro / 10 << std::endl;
+    std::cout << "Scan w cro time: " << coro / 10 << std::endl;
 }
