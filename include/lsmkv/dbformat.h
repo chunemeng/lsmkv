@@ -20,7 +20,7 @@ namespace LSMKV {
 
   public:
       QueryKey(SequenceNumber seq, Slice key) {
-          // 4 bytes for key length, key, 8 bytes for seq and type
+          // 4 bytes for key length | key | 8 bytes for seq and type
           len_ = key.size() + 12;
           rep_.resize(len_);
           char *p = rep_.data();
@@ -35,10 +35,13 @@ namespace LSMKV {
           return DecodeFixed64(rep_.data() + len_ - 8) >> 8;
       }
 
+      // only key
       Slice user_key() const { return {rep_.data() + 4, len_ - 12}; }
 
+      // size | key | seq | type
       Slice mem_key() const { return {rep_.data(), len_}; }
 
+      // key | seq | type
       Slice internal_key() const { return {rep_.data() + 4, len_ - 4}; }
   };
 

@@ -145,7 +145,7 @@ namespace LSMKV {
 
   static inline Status ParserBlock(Slice *block, Slice *key) {
       if (block->empty()) {
-          return Status::Corruption("bad block entry");
+          return Status::Corruption("bad block entry " + line_info());
       }
       auto sz = block->size();
       auto p = block->data();
@@ -154,7 +154,7 @@ namespace LSMKV {
 
       auto value_size = DecodeFixed32(p + 4);
       if (sz < key_size + value_size + 8) {
-          return Status::Corruption("bad block entry");
+          return Status::Corruption("bad block entry " + line_info());
       }
       *key = {block->data(), key_size + value_size + 8};
 
@@ -407,7 +407,10 @@ namespace LSMKV {
 
   class Footer {
   public:
-      enum { kEncodedLength = 2 * sizeof(BlockEntryInfo) + 8 };
+      enum {
+          kBlockInfoLength = sizeof(BlockEntryInfo) * 3,
+          kEncodedLength = kBlockInfoLength + 8
+      };
 
       Footer() = default;
 
@@ -421,15 +424,20 @@ namespace LSMKV {
 
       void set_index_handle(const BlockEntryInfo &h) { index_handle_ = h; }
 
+      const BlockEntryInfo &model_handle() const { return model_handle_; }
+
+      void set_model_handle(const BlockEntryInfo &h) { model_handle_ = h; }
+
       [[nodiscard]] std::string Encode() const {
           std::string dst;
           dst.reserve(kEncodedLength);
           dst.append(metaindex_handle_.Encode());
           dst.append(index_handle_.Encode());
+          dst.append(model_handle_.Encode());
 
-          dst.append(kEncodedLength - sizeof(BlockEntryInfo) * 2, '\0');
+          dst.append(kEncodedLength - kBlockInfoLength, '\0');
 
-          auto buf = dst.data() + 2 * sizeof(BlockEntryInfo);
+          auto buf = dst.data() + kBlockInfoLength;
 
           EncodeFixed32(buf, kTableMagicNumber & 0xfffffffu);
           EncodeFixed32(buf + 4, kTableMagicNumber >> 32);
@@ -443,6 +451,11 @@ namespace LSMKV {
           if (status.ok()) {
               input.remove_prefix(sizeof(BlockEntryInfo));
               status = index_handle_.Decode(input);
+          }
+
+          if (status.ok()) {
+              input.remove_prefix(sizeof(BlockEntryInfo));
+              status = model_handle_.Decode(input);
           }
 
           if (status.ok()) {
@@ -467,6 +480,7 @@ namespace LSMKV {
       }
 
   private:
+      BlockEntryInfo model_handle_;
       BlockEntryInfo metaindex_handle_;
       BlockEntryInfo index_handle_;
   };
@@ -716,7 +730,6 @@ namespace LSMKV {
       BlockIterator block_iter_{};
 
       BlockIterator index_iter_{};
-
       Comparator *cmp_{};
 
       const std::string &db_name_;
