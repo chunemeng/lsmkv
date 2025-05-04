@@ -8,6 +8,12 @@
 #include "spdlog/async.h"
 #include "slice.h"
 
+namespace LSMKV {
+  static inline std::string line_info(std::source_location s = std::source_location::current()) {
+      return std::string(s.file_name()) + ":" + std::to_string(s.line());
+  }
+} // namespace LSMKV
+
 namespace LSMKV::log {
 
   class LoggerSingleton {
