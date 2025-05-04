@@ -11,6 +11,14 @@
 
 using Status = KVStoreAPI::Status;
 
+bool CheckFixedSize(LSMKV::Slice key) {
+    if constexpr (LSMKV::Option::enable_fixed_length > 0 && LSMKV::Option::enable_fixed_length < 64) {
+        return key.size() == static_cast<size_t>(LSMKV::Option::enable_fixed_length);
+    } else {
+        return true;
+    }
+}
+
 LSMKV::Status KVStoreAPI::Open(const std::string &dir, const std::string &vlog,
                                KVStoreAPI **ptr) {
     std::unique_ptr<KVStoreAPI> store;
@@ -96,7 +104,7 @@ void KVStore::BackgroundCompaction() {
 
     // Compact SST files
 
-    if (kc->NumLevelFiles(0) < LSMKV::Option::kL0_CompactionTrigger && !triger_sst_compaction_) {
+    if (kc->NumLevelFilesEx(0) < LSMKV::Option::kL0_CompactionTrigger && !triger_sst_compaction_) {
         return;
     }
 
@@ -199,6 +207,10 @@ Status KVStore::Prepare() {
  */
 
 Status KVStore::put(LSMKV::Slice key, LSMKV::Slice val) {
+    if (!CheckFixedSize(key)) {
+        return Status::NotFound(LSMKV::line_info());
+    }
+
     rwlock_.lock();
     Status s = Prepare();
 
@@ -272,7 +284,7 @@ Status KVStore::GetImpl(LSMKV::Slice key, std::string *val) {
         }
 
         if (kc->empty()) {
-            return Status::NotFound();
+            return Status::NotFound(LSMKV::line_info());
         }
 
         status = kc->get(query_key, &rep_);
@@ -280,7 +292,7 @@ Status KVStore::GetImpl(LSMKV::Slice key, std::string *val) {
 
     if (status.ok()) {
         if (rep_.length_ == 0) {
-            return Status::NotFound();
+            return Status::NotFound(LSMKV::line_info());
         }
 
         return vlog_reader_.Read(rep_, val);
@@ -291,6 +303,10 @@ Status KVStore::GetImpl(LSMKV::Slice key, std::string *val) {
 
 
 Status KVStore::get(LSMKV::Slice key, std::string *val) {
+    if (!CheckFixedSize(key)) [[unlikely]] {
+        return Status::NotFound(LSMKV::line_info());
+    }
+
     std::shared_lock lock(rwlock_);
 
     return GetImpl(key, val);
@@ -318,7 +334,7 @@ Status KVStore::del(LSMKV::Slice key) {
         status = GetImpl(key, &val);
 
         if (status.IsNotFound()) {
-            return Status::NotFound();
+            return status;
         }
 
         if (!status.ok()) {
@@ -391,7 +407,7 @@ Status KVStore::scan(LSMKV::Slice key1, LSMKV::Slice key2,
         {
             if (imm != nullptr) {
                 LSMKV::Iterator *iter = imm->newIterator();
-                iter->seek(key1, key2);
+                iter->seek(query_key1.mem_key(), query_key2.mem_key());
 
                 LSMKV::Scan(&map, iter, seq);
 
@@ -403,14 +419,14 @@ Status KVStore::scan(LSMKV::Slice key1, LSMKV::Slice key2,
 
     kc->scan(query_key1.internal_key(), query_key2.internal_key(), &map);
 
-
     for (auto &it: map) {
         list.emplace_back(it.first, it.second);
     }
+
     Status status = Status::OK();
-    for (auto it = list.begin(); it != list.end(); it++) {
+    for (auto it = list.begin(); it != list.end();) {
         if (it->second.empty()) {
-            list.erase(it);
+            it = list.erase(it);
             continue;
         }
         LSMKV::VLogEntryInfo info{};
@@ -423,14 +439,63 @@ Status KVStore::scan(LSMKV::Slice key1, LSMKV::Slice key2,
         status = vlog_reader_.Read(info, &it->second);
         if (!status.ok()) [[unlikely]] {
             if (status.IsExpired()) {
-                list.erase(it);
+                it = list.erase(it);
+                continue;
             } else {
                 break;
             }
         }
+        it++;
     }
 
     return status;
+}
+
+Status KVStore::scan_w_cro(LSMKV::Slice key1, LSMKV::Slice key2,
+                           std::list<std::pair<std::string, std::string>> &list) {
+    auto seq = version_->LastSequence();
+    LSMKV::QueryKey query_key1{seq, key1};
+    LSMKV::QueryKey query_key2{seq, key2};
+
+
+    std::map<std::string, std::string> map;
+    {
+
+        std::string last_key;
+        std::shared_ptr<LSMKV::MemTable> imm;
+        {
+            std::shared_lock lock(rwlock_);
+            LSMKV::Iterator *iter = mem_->newIterator();
+            imm = imm_.load(std::memory_order_acquire);
+            iter->seek(query_key1.mem_key(), query_key2.mem_key());
+
+            LSMKV::Scan(&map, iter, seq);
+
+            delete iter;
+        }
+
+        {
+            if (imm != nullptr) {
+                LSMKV::Iterator *iter = imm->newIterator();
+                iter->seek(query_key1.mem_key(), query_key2.mem_key());
+
+                LSMKV::Scan(&map, iter, seq);
+
+                delete iter;
+            }
+        }
+    }
+
+
+    kc->scan(query_key1.internal_key(), query_key2.internal_key(), &map);
+
+    for (auto &it: map) {
+        list.emplace_back(it.first, it.second);
+    }
+
+    Status status = Status::OK();
+    LSMKV::CoroVLogReader vlog_readers(db_info.dbname, version_);
+    return vlog_readers.ReadList(list);
 }
 
 /**
@@ -467,6 +532,7 @@ Status KVStore::WriteLevel0Table(std::shared_ptr<LSMKV::MemTable> &&imm) {
 //        if (base != nullptr) {
 //            level = base->PickLevelForMemTableOutput(min_user_key, max_user_key);
 //        }
+        // safe x
         kc->AddFile(0, &meta);
     }
 
@@ -479,7 +545,7 @@ Status KVStore::WriteLevel0Table(std::shared_ptr<LSMKV::MemTable> &&imm) {
 
 void KVStore::RecordBackgroundError(LSMKV::Slice s) {
     if (!bg_catch_error_.load(std::memory_order_acquire)) {
-        LSMKV::log::error("Background error: {}", s);
+        LSMKV::log::error("Background error: {}", s.toString());
 
         // FIXME: thread wait in condition, but the condition is still not notified
 
@@ -524,4 +590,5 @@ Status KVStore::ExpireAt(LSMKV::SequenceNumber seq) {
 }
 
 Status KVStore::Recover() {
+    return Status::OK();
 }

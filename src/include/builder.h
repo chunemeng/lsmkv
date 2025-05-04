@@ -11,6 +11,7 @@
 #include "block_format.h"
 #include "crc32c/crc32c.h"
 #include "file.h"
+#include "model.h"
 
 
 namespace LSMKV {
@@ -68,8 +69,7 @@ namespace LSMKV {
   public:
       BlockBuilder() = default;
 
-      size_t
-      BlockSize() const {
+      size_t BlockSize() const {
           return buffer_.size();
       }
 
@@ -147,10 +147,13 @@ namespace LSMKV {
       }
 
   public:
-      TableBuilder(WritableFile *file, Comparator *cmp, std::shared_ptr<Executor> executor, bool open_filter = true)
+      TableBuilder(WritableFile *file, Comparator *cmp, std::shared_ptr<Executor> executor, bool open_model = false, bool open_filter = true)
               : file_(file),
                 comparator_(cmp),
                 executor_(std::move(executor)) {
+          if (open_model) {
+              trainer_ = std::make_unique<LazyGreedyPLRTrainer>();
+          }
           if (open_filter) {
               filter_block_ = std::make_unique<FilterBlockBuilder>(Option::bloom_size_);
           }
@@ -210,6 +213,7 @@ namespace LSMKV {
 
       BlockEntryInfo data_block_entry_{0, 0};
 
+      std::unique_ptr<LazyGreedyPLRTrainer> trainer_;
 
       size_t num_entries_{0};
 

@@ -48,6 +48,10 @@ namespace LSMKV {
           filter_block_->AddKey(ExtractUserKey(key));
       }
 
+      if (trainer_ != nullptr) {
+          trainer_->Add(key, data_block_.BlockSize() + offset_);
+      }
+
       num_entries_++;
       data_block_.Add(key, value);
 
@@ -65,6 +69,10 @@ namespace LSMKV {
           filter_block_->Flush();
       }
 
+      if (trainer_ != nullptr) {
+          trainer_->End();
+      }
+
       if (data_block_.Empty()) return;
 
       WriteBlock(&data_block_, &data_block_entry_);
@@ -78,12 +86,17 @@ namespace LSMKV {
       closed_ = true;
       Flush();
 
-      BlockEntryInfo filter_block_handle{}, index_block_handle{};
+      BlockEntryInfo filter_block_handle{}, index_block_handle{}, model_block_handle{};
 
       // Write filter block
       if (OK() && filter_block_ != nullptr) {
           WriteRawBlock(filter_block_->Finish(),
                         &filter_block_handle);
+      }
+
+      if (OK() && trainer_ != nullptr) {
+          trainer_->Train();
+          WriteRawBlock(trainer_->rep_, &model_block_handle);
       }
 
       // Write index block
@@ -103,6 +116,7 @@ namespace LSMKV {
           Footer footer{};
           footer.set_metaindex_handle(filter_block_handle);
           footer.set_index_handle(index_block_handle);
+          footer.set_model_handle(model_block_handle);
           std::string footer_encoding = footer.Encode();
 
           status_ = file_->Append(footer_encoding);

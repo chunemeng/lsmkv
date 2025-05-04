@@ -2,44 +2,46 @@
 #define OPTION_H
 
 namespace LSMKV {
-  struct Option {
-      Option() = default;
+    struct Option {
+        Option() = default;
 
-      ~Option() = default;
+        ~Option() = default;
 
-      static constexpr bool isFilter = true;
+        static constexpr bool isFilter = true;
 
-      static constexpr bool use_double_k_ = false;
+        static constexpr bool use_double_k_ = false;
 
-      static constexpr int sst_footer_size_ = 32;
+        static constexpr int sst_footer_size_ = 32;
 
-      static constexpr int sst_file_size_ = 2 * 1024 * 1024;
+        static constexpr int sst_file_size_ = 32 * 1024;
 
-      static constexpr int bloom_size_ = 8192;
+        static constexpr int bloom_size_ = 8192;
 
-      static constexpr int mem_max_size_ = sst_file_size_ - bloom_size_ - sst_footer_size_;
+        static constexpr int mem_max_size_ = sst_file_size_ - bloom_size_ - sst_footer_size_;
 
-      static constexpr int kL0_CompactionTrigger = 4;
+        static constexpr int kL0_CompactionTrigger = 4;
 
-      static constexpr int kCompactionVLogLevel = 3;
+        static constexpr int kCompactionVLogLevel = 3;
 
-      static constexpr int kBlockTrailerSize = 4;
+        static constexpr int enable_fixed_length = 0;
 
-      static constexpr int kMaxVLogSize = 128 * 1024 * 1024;
+        static constexpr int kBlockTrailerSize = 4;
 
-      static constexpr int block_size = 4096;
+        static constexpr int kMaxVLogSize = 128 * 1024 * 1024;
 
-      static_assert(bloom_size_ > 0);
+        static constexpr int block_size = 4096 * 4;
 
-      Option &operator=(const Option &option) = delete;
+        static_assert(bloom_size_ > 0);
 
-      Option(const Option &option) = delete;
+        Option &operator=(const Option &option) = delete;
 
-      static Option &getInstance() {
-          static Option option;
-          return option;
-      }
-  };
+        Option(const Option &option) = delete;
+
+        static Option &getInstance() {
+            static Option option;
+            return option;
+        }
+    };
 }// namespace LSMKV
 
 #endif//OPTION_H
