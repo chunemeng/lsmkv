@@ -3,6 +3,7 @@
 #include "block_format.h"
 #include "utils/status.h"
 #include "io_uring_reader.h"
+#include "utils/arena.h"
 
 namespace LSMKV {
   namespace detail {
@@ -41,6 +42,36 @@ namespace LSMKV {
         explicit Task(Handle h) : h_(h) {}
 
         ~Task() = default;
+
+        Handle h_;
+    };
+
+    struct VLogReadTask {
+        struct promise_type;
+        using Handle = std::coroutine_handle<promise_type>;
+
+        struct promise_type {
+            Status s;
+
+            VLogReadTask get_return_object() {
+                return VLogReadTask{Handle::from_promise(*this)};
+            }
+
+            static std::suspend_never initial_suspend() { return {}; }
+
+            std::suspend_always final_suspend() noexcept { return {}; }
+
+            void return_value(Status s) {
+                this->s = std::move(s);
+            }
+
+            static void unhandled_exception() { std::terminate(); }
+
+        };
+
+        explicit VLogReadTask(Handle h) : h_(h) {}
+
+        ~VLogReadTask() = default;
 
         Handle h_;
     };
@@ -98,8 +129,10 @@ namespace LSMKV {
               }
           }
 
-          return Status::NotFound();
+          return Status::NotFound("not found key in FilterInIndex " + line_info());
       }
+
+      static Status FindByModel(Slice input, const Slice &internal_key, std::pair<int64_t, int64_t> *location);
 
       static Status FindInBlock(Slice input, const Slice &internal_key, VLogEntryInfo *vlog_info) {
           Comparator user_cmp = StrComparator();
@@ -124,7 +157,7 @@ namespace LSMKV {
               auto ret = user_cmp.compare(ExtractUserKey(internal_key), ExtractUserKey(block_internal_key));
 
               if (ret < 0) {
-                  return Status::NotFound();
+                  return Status::NotFound("not found key in FindInBlock " + line_info());
               }
 
               if (ret == 0) {
@@ -141,100 +174,17 @@ namespace LSMKV {
                       return status;
                   }
 
-                  return Status::NotFound();
+                  return Status::NotFound("not found key in FindInBlock " + line_info());
               }
           }
-          return Status::NotFound();
+          return Status::NotFound("not found key in FindInBlock " + line_info());
       }
 
-      Status ReadOne(const SSTFileMeta *meta, Slice internal_key, VLogEntryInfo *vlog_info) {
-          std::unique_ptr<SequentialFile> file;
-          Status status = NewSequentialFile(SSTFileName(db_name_, meta->file_number_), &file);
-          if (!status.ok()) {
-              return status;
-          }
-
-          Footer footer{};
-
-          Slice input;
-          std::string buffer;
-          buffer.resize(Footer::kEncodedLength);
-
-          status = file->MoveTo(meta->file_size_ - Footer::kEncodedLength);
-
-          if (!status.ok()) {
-              return status;
-          }
-
-          file->Read(Footer::kEncodedLength, &input, buffer.data());
-
-          status = footer.Decode(input);
-
-          if (!status.ok()) {
-              return status;
-          }
-
-          const auto &metaindex_handle = footer.metaindex_handle();
-          const auto &index_handle = footer.index_handle();
-
-          buffer.resize(metaindex_handle.size_);
-
-          status = file->MoveTo(metaindex_handle.offset_);
-
-          if (!status.ok()) {
-              return status;
-          }
-
-          file->Read(metaindex_handle.size_, &input, buffer.data());
-          if (!status.ok()) {
-              return status;
-          }
-          if (!KeyMayMatch(ExtractUserKey(internal_key), input)) {
-              return Status::NotFound();
-          }
-
-          buffer.resize(index_handle.size_);
-
-          status = file->MoveTo(index_handle.offset_);
-
-          if (!status.ok()) {
-              return status;
-          }
-
-          file->Read(index_handle.size_, &input, buffer.data());
-
-          if (!status.ok()) {
-              return status;
-          }
-
-          BlockEntryInfo b_info{};
-
-          status = FilterInIndex(input, internal_key, &b_info);
-
-          if (!status.ok()) {
-              return status;
-          }
-
-          buffer.resize(b_info.size_);
-
-          status = file->MoveTo(b_info.offset_);
-
-          if (!status.ok()) {
-              return status;
-          }
-
-          file->Read(b_info.size_, &input, buffer.data());
-
-          if (!status.ok()) {
-              return status;
-          }
-
-          return FindInBlock(input, internal_key, vlog_info);
-      }
+      Status ReadOne(const SSTFileMeta *meta, Slice internal_key, VLogEntryInfo *vlog_info);
 
       detail::Task Async_ReadOne(UringExecutor &executor, const SSTFileMeta *meta, const Slice &internal_key) {
-		  // sst k|v_ptr k|v_ptr
-		  // vlog k|v k|v
+          // sst k|v_ptr k|v_ptr
+          // vlog k|v k|v
           auto file_name = SSTFileName(db_name_, meta->file_number_);
 
           int fd = open(file_name.c_str(), O_RDONLY | kOpenBaseFlags);
@@ -309,7 +259,7 @@ namespace LSMKV {
 
           if (!KeyMayMatch(ExtractUserKey(internal_key), input)) {
               guard.~Guard();
-              co_return {Status::NotFound(), nullptr};
+              co_return {Status::NotFound("Filtered by bloom in " + line_info()), nullptr};
           }
 
           buffer.resize(index_handle.size_);
@@ -384,20 +334,19 @@ namespace LSMKV {
               auto promise = task.h_.promise();
 
               if (promise.s.ok()) {
-                  *vlog_info = std::move(promise.vlog_info);
+                  *vlog_info = promise.vlog_info;
                   return Status::OK();
               } else if (!promise.s.IsNotFound()) {
                   return promise.s;
               }
           }
 
-          return Status::NotFound();
+          return Status::NotFound(line_info());
       }
 
 
   public:
-      Status
-      ReadBatch(const std::vector<const SSTFileMeta *> &metas, Slice internal_key, VLogEntryInfo *vlog_info) {
+      Status ReadBatch(const std::vector<const SSTFileMeta *> &metas, Slice internal_key, VLogEntryInfo *vlog_info) {
           if (metas.size() == 1) {
               return ReadOne(*metas.begin(), internal_key, vlog_info);
           }
@@ -418,6 +367,149 @@ namespace LSMKV {
       uint32_t active_tasks = 0;
 
       const std::string db_name_;
+  };
+
+  class CoroVLogReader {
+  private:
+      std::shared_ptr<Version> version_{};
+
+      const std::string db_name_;
+      UringExecutor executor_{20};
+
+      uint32_t active_tasks = 0;
+  public:
+      explicit CoroVLogReader(const std::string &db_name, std::shared_ptr<Version> version = nullptr) : db_name_(
+              db_name), version_(std::move(version)) {
+      }
+
+      detail::VLogReadTask Async_ReadOne(VLogEntryInfo info, Arena *arena, std::string *value) {
+          auto file_name = VLogFileName(db_name_, info.file_no_);
+          int fd = open(file_name.c_str(), O_RDONLY | kOpenBaseFlags);
+
+          struct Guard {
+              uint32_t &active_tasks_;
+              int fd_;
+
+              Guard(uint32_t &active_tasks, int fd) : active_tasks_(active_tasks), fd_(fd) { ++active_tasks_; }
+
+              ~Guard() {
+                  --active_tasks_;
+                  if (fd_ > 0) {
+                      close(fd_);
+                  }
+              }
+          } guard(active_tasks, fd);
+
+          auto *buf = arena->allocate(info.length_ + Option::kBlockTrailerSize);
+
+          auto status = Status::OK();
+          if (!status.ok()) {
+              guard.~Guard();
+              co_return {std::move(status)};
+          }
+
+          auto h = co_await detail::CoroutineHandleAwaiter{};
+
+          status = executor_
+                  .async_read_wno_submit(fd, buf, info.length_ + Option::kBlockTrailerSize, info.offset_, h.address());
+
+          co_await std::suspend_always{};
+
+          if (!status.ok()) {
+              log::debug("async read failed: {}", status.ToString());
+              guard.~Guard();
+
+              co_return {std::move(status)};
+          }
+
+          uint32_t key_size = DecodeFixed32(buf);
+          uint32_t value_size = DecodeFixed32(buf + 4);
+
+          assert(key_size + value_size + 8 == info.length_);
+
+          auto crc32 = DecodeFixed32(buf + 8 + key_size + value_size);
+          auto crc = crc32c::Crc32c(buf, key_size + value_size + 8);
+
+          if (crc32 != crc) {
+              log::debug("crc32: {}, crc: {}", crc32, crc);
+              guard.~Guard();
+              co_return {Status::Corruption("bad crc")};
+          }
+
+          if (version_ != nullptr) {
+              auto live_seq = version_->LastLivingSequence();
+              auto seq = ExtractSequenceNumber(Slice(buf + 8, key_size));
+
+              if (seq < live_seq) {
+                  log::debug("seq: {}, live_seq: {}", seq, live_seq);
+                  guard.~Guard();
+                  co_return {Status::Expired()};
+              }
+          }
+
+          *value = {buf + key_size + 8, value_size};
+
+          guard.~Guard();
+          co_return {Status::OK()};
+      }
+
+
+      Status ReadList(std::list<std::pair<std::string, std::string>> &list) {
+          std::vector<detail::VLogReadTask> tasks;
+          active_tasks += list.size();
+
+          log::info("siaiz: {}", active_tasks);
+
+
+          auto fun = +[](void *data) {
+              auto handle = std::coroutine_handle<detail::Task::promise_type>::from_address(data);
+              handle.resume();
+          };
+
+          Arena arena{};
+
+          Status status = Status::OK();
+          tasks.reserve(list.size());
+
+          for (auto it = list.begin(); it != list.end();) {
+              while (executor_.count() >= executor_.size()) {
+                  executor_.submit();
+                  executor_.process_completions_w_call_back(fun);
+              }
+
+              if (it->second.empty()) {
+                  it = list.erase(it);
+                  active_tasks--;
+                  continue;
+              }
+
+              LSMKV::VLogEntryInfo info{};
+              status = info.Decode(it->second);
+
+              if (!status.ok()) [[unlikely]] {
+                  active_tasks--;
+              }
+
+              tasks.emplace_back(Async_ReadOne(info, &arena, &it->second));
+              it++;
+          }
+          executor_.submit();
+
+          while (active_tasks > 0) {
+              executor_.process_completions_w_call_back(fun);
+          }
+
+          for (auto &task: tasks) {
+              assert(task.h_.done());
+
+              auto promise = task.h_.promise();
+
+              if (!promise.s.IsNotFound()) {
+                  return promise.s;
+              }
+          }
+          return Status::OK();
+      }
   };
 
   class VLogReader {
@@ -456,6 +548,7 @@ namespace LSMKV {
                                                                                                     version_(std::move(
                                                                                                             version)) {
       }
+
 
       Status Read(const VLogEntryInfo &info, std::string *value) {
           std::vector<char> tmp(info.length_ + Option::kBlockTrailerSize);

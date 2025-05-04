@@ -60,7 +60,10 @@ public:
      */
     virtual Status scan(LSMKV::Slice key1, LSMKV::Slice key2, std::list<std::pair<std::string, std::string>> &list) = 0;
 
-    /**
+	virtual Status scan_w_cro(LSMKV::Slice key1, LSMKV::Slice key2, std::list<std::pair<std::string, std::string>> &list) = 0;
+
+
+	/**
      * This reclaims space from vLog by moving valid value and discarding invalid value.
      * chunk_size is the _size in byte you should AT LEAST recycle.
      */

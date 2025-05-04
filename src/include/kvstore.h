@@ -100,6 +100,8 @@ public:
 
     Status scan(LSMKV::Slice start, LSMKV::Slice end, std::list<std::pair<std::string, std::string>> &result) override;
 
+	Status scan_w_cro(LSMKV::Slice start, LSMKV::Slice end, std::list<std::pair<std::string, std::string>> &result) override;
+
     uint64_t ApproximateVLogFileSize() const override;
 
     Status ExpireAt(LSMKV::SequenceNumber seq);
